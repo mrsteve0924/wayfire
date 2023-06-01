@@ -1,4 +1,5 @@
 #include "xdg-toplevel-view.hpp"
+#include <wayfire/scene-operations.hpp>
 #include "wayfire/core.hpp"
 #include <wayfire/txn/transaction.hpp>
 #include <wayfire/txn/transaction-manager.hpp>
@@ -8,7 +9,7 @@
 #include "wayfire/debug.hpp"
 #include "wayfire/geometry.hpp"
 #include <wayfire/output-layout.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 
 /**
  * When we get a request for setting CSD, the view might not have been
@@ -327,7 +328,8 @@ void wf::xdg_toplevel_view_t::map()
     {
         if (!parent)
         {
-            get_output()->workspace->add_view(self(), wf::LAYER_WORKSPACE);
+            wf::scene::readd_front(get_output()->wset()->get_node(), get_root_node());
+            get_output()->wset()->add_view(self());
         }
 
         get_output()->focus_view(self(), true);
@@ -337,8 +339,6 @@ void wf::xdg_toplevel_view_t::map()
     emit_view_map();
     /* Might trigger repositioning */
     set_toplevel_parent(this->parent);
-
-    wf::dump_scene();
 }
 
 void wf::xdg_toplevel_view_t::unmap()
@@ -504,10 +504,7 @@ void wf::xdg_toplevel_view_t::set_decoration_mode(bool use_csd)
         data.view = self();
 
         this->emit(&data);
-        if (get_output())
-        {
-            get_output()->emit(&data);
-        }
+        wf::get_core().emit(&data);
     }
 }
 

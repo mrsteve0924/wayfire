@@ -2,11 +2,12 @@
 #include "wayfire/plugins/common/input-grab.hpp"
 #include "wayfire/plugins/common/util.hpp"
 #include "wayfire/scene-input.hpp"
+#include "wayfire/view-helpers.hpp"
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/view-transform.hpp>
 #include <wayfire/view.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/util/log.hpp>
 #include <wayfire/seat.hpp>
 
@@ -62,12 +63,12 @@ class wayfire_fast_switcher : public wf::per_output_plugin_instance_t, public wf
         set_view_alpha(views[i], 1.0);
         for (int i = (int)views.size() - 1; i >= 0; i--)
         {
-            output->workspace->bring_to_front(views[i]);
+            wf::view_bring_to_front(views[i]);
         }
 
         if (reorder_only)
         {
-            output->workspace->bring_to_front(views[i]);
+            wf::view_bring_to_front(views[i]);
         } else
         {
             output->focus_view(views[i], true);
@@ -114,9 +115,8 @@ class wayfire_fast_switcher : public wf::per_output_plugin_instance_t, public wf
 
     void update_views()
     {
-        views = output->workspace->get_views_on_workspace(
-            output->workspace->get_current_workspace(), wf::WM_LAYERS);
-
+        views = output->wset()->get_views(
+            wf::WSET_CURRENT_WORKSPACE | wf::WSET_MAPPED_ONLY | wf::WSET_EXCLUDE_MINIMIZED);
         std::sort(views.begin(), views.end(), [] (wayfire_view& a, wayfire_view& b)
         {
             return wf::get_focus_timestamp(a) > wf::get_focus_timestamp(b);
@@ -153,7 +153,7 @@ class wayfire_fast_switcher : public wf::per_output_plugin_instance_t, public wf
             set_view_alpha(view, inactive_alpha);
         }
 
-        input_grab->grab_input(wf::scene::layer::OVERLAY, true);
+        input_grab->grab_input(wf::scene::layer::OVERLAY);
         activating_modifiers = wf::get_core().seat->get_keyboard_modifiers();
         switch_next(forward);
 

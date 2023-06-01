@@ -3,12 +3,17 @@
 #include "../core/core-impl.hpp"
 #include "view-impl.hpp"
 #include "wayfire/decorator.hpp"
+#include "wayfire/scene-input.hpp"
+#include "wayfire/scene-render.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-definitions.hpp"
-#include "wayfire/workspace-manager.hpp"
+#include "wayfire/view.hpp"
+#include "wayfire/workspace-set.hpp"
 #include "wayfire/output-layout.hpp"
 #include <memory>
 #include <wayfire/util/log.hpp>
+#include <wayfire/view-helpers.hpp>
+#include <wayfire/scene-operations.hpp>
 
 #include "xdg-shell.hpp"
 
@@ -204,10 +209,7 @@ void wf::wlr_view_t::set_decoration_mode(bool use_csd)
         data.view = self();
 
         this->emit(&data);
-        if (get_output())
-        {
-            get_output()->emit(&data);
-        }
+        wf::get_core().emit(&data);
     }
 }
 
@@ -244,7 +246,8 @@ void wf::wlr_view_t::map(wlr_surface *surface)
     {
         if (!parent)
         {
-            get_output()->workspace->add_view(self(), wf::LAYER_WORKSPACE);
+            wf::scene::readd_front(get_output()->wset()->get_node(), get_root_node());
+            get_output()->wset()->add_view(self());
         }
 
         get_output()->focus_view(self(), true);
@@ -452,4 +455,88 @@ void wf::view_interface_t::view_priv_impl::set_mapped(bool mapped)
     {
         scene::set_node_enabled(root_node, false);
     }
+}
+
+// ---------------------------------------------- view helpers -----------------------------------------------
+std::optional<wf::scene::layer> wf::get_view_layer(wayfire_view view)
+{
+    wf::scene::node_t *node = view->get_root_node().get();
+    auto root = wf::get_core().scene().get();
+
+    while (node->parent())
+    {
+        if (node->parent() == root)
+        {
+            for (int i = 0; i < (int)wf::scene::layer::ALL_LAYERS; i++)
+            {
+                if (node == root->layers[i].get())
+                {
+                    return (wf::scene::layer)i;
+                }
+            }
+        }
+
+        node = node->parent();
+    }
+
+    return {};
+}
+
+void wf::view_bring_to_front(wayfire_view view)
+{
+    wf::scene::node_t *node = view->get_root_node().get();
+    wf::scene::node_t *damage_from = nullptr;
+    while (node->parent())
+    {
+        if (!node->is_structure_node() && dynamic_cast<scene::floating_inner_node_t*>(node->parent()))
+        {
+            damage_from = node->parent();
+            wf::scene::raise_to_front(node->shared_from_this());
+        }
+
+        node = node->parent();
+    }
+
+    if (damage_from)
+    {
+        wf::scene::damage_node(damage_from->shared_from_this(), damage_from->get_bounding_box());
+    }
+}
+
+static void gather_views(wf::scene::node_ptr root, std::vector<wayfire_view>& views)
+{
+    if (!root->is_enabled())
+    {
+        return;
+    }
+
+    if (auto view = wf::node_to_view(root))
+    {
+        views.push_back(view);
+        return;
+    }
+
+    for (auto& ch : root->get_children())
+    {
+        gather_views(ch, views);
+    }
+}
+
+std::vector<wayfire_view> wf::collect_views_from_scenegraph(wf::scene::node_ptr root)
+{
+    std::vector<wayfire_view> views;
+    gather_views(root, views);
+    return views;
+}
+
+std::vector<wayfire_view> wf::collect_views_from_output(wf::output_t *output,
+    std::initializer_list<wf::scene::layer> layers)
+{
+    std::vector<wayfire_view> views;
+    for (auto layer : layers)
+    {
+        gather_views(output->node_for_layer(layer), views);
+    }
+
+    return views;
 }

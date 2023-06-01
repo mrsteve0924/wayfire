@@ -170,14 +170,15 @@ class compositor_core_t : public wf::object_base_t, public signal::provider_t
     /**
      * Break any grabs on pointer, touch and tablet input.
      * Then, transfer input focus to the given node in a grab mode.
+     * Note that when transferring a grab, synthetic button release/etc. events are sent to the old pointer
+     * and touch focus nodes (except if they are not RAW_INPUT nodes).
+     *
+     * The grab node, if it is not RAW_INPUT, will also not receive button release events for buttons pressed
+     * before it grabbed the input, if it does not have the RAW_INPUT flag.
      *
      * @param node The node which should receive the grabbed input.
-     * @param retain_pressed_state Some plugins may be activated with a button/touch/etc. press (for example
-     *   the move plugin). They want to receive the matching button_release event, even though they have not
-     *   received the button press event. In these cases, they can use the @retain_pressed_state parameter to
-     *   indicate to core their desire for receiving unmatched button release events.
      */
-    virtual void transfer_grab(wf::scene::node_ptr node, bool retain_pressed_state) = 0;
+    virtual void transfer_grab(wf::scene::node_ptr node) = 0;
 
     /** no such coordinate will ever realistically be used for input */
     static constexpr double invalid_coordinate =
@@ -258,12 +259,6 @@ class compositor_core_t : public wf::object_base_t, public signal::provider_t
     virtual std::vector<wayfire_view> get_all_views() = 0;
 
     /**
-     * Focus the given view and its output (if necessary).
-     * Will also bring the view to the top of the stack.
-     */
-    virtual void focus_view(wayfire_view win) = 0;
-
-    /**
      * Focus the given output. The currently focused output is used to determine
      * which plugins receive various events (including bindings)
      */
@@ -273,14 +268,6 @@ class compositor_core_t : public wf::object_base_t, public signal::provider_t
      * Get the currently focused "active" output
      */
     virtual wf::output_t *get_active_output() = 0;
-
-    /**
-     * Change the view's output to new_output. If the reconfigure flag is
-     * set, it will adjust the view geometry for the new output and clamp
-     * it to the output geometry so it is at an expected size and position.
-     */
-    virtual void move_view_to_output(wayfire_view v,
-        wf::output_t *new_output, bool reconfigure) = 0;
 
     /** The wayland socket name of Wayfire */
     std::string wayland_display;
@@ -329,6 +316,13 @@ class compositor_core_t : public wf::object_base_t, public signal::provider_t
     compositor_core_t();
     virtual ~compositor_core_t();
 };
+
+/**
+ * Change the view's output to new_output. If the reconfigure flag is
+ * set, it will adjust the view geometry for the new output and clamp
+ * it to the output geometry so it is at an expected size and position.
+ */
+void move_view_to_output(wayfire_view v, wf::output_t *new_output, bool reconfigure);
 
 /**
  * Simply a convenience function to call wf::compositor_core_t::get()

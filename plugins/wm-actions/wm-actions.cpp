@@ -1,13 +1,25 @@
 #include <wayfire/view.hpp>
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/output.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/util/log.hpp>
+#include "wayfire/core.hpp"
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-definitions.hpp"
 #include "wayfire/signal-provider.hpp"
 #include "wm-actions-signals.hpp"
+
+class always_on_top_root_node_t : public wf::scene::output_node_t
+{
+  public:
+    using output_node_t::output_node_t;
+
+    std::string stringify() const override
+    {
+        return "always-on-top for output " + get_output()->to_string() + " " + stringify_flags();
+    }
+};
 
 class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
 {
@@ -41,17 +53,16 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
             return false;
         }
 
-        wf::scene::remove_child(view->get_root_node());
         if (above)
         {
-            wf::scene::add_front(always_above, view->get_root_node());
+            wf::scene::readd_front(always_above, view->get_root_node());
             view->store_data(std::make_unique<wf::custom_data_t>(),
                 "wm-actions-above");
         } else
         {
+            wf::scene::readd_front(output->wset()->get_node(), view->get_root_node());
             if (view->has_data("wm-actions-above"))
             {
-                output->workspace->add_view(view, wf::LAYER_WORKSPACE);
                 view->erase_data("wm-actions-above");
             }
         }
@@ -99,10 +110,10 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
     /**
      * Ensures views marked as above are still above if their output changes.
      */
-    wf::signal::connection_t<wf::view_moved_to_output_signal> on_view_output_changed =
-        [=] (wf::view_moved_to_output_signal *signal)
+    wf::signal::connection_t<wf::view_moved_to_wset_signal> on_view_output_changed =
+        [=] (wf::view_moved_to_wset_signal *signal)
     {
-        if (signal->new_output != output)
+        if (!signal->new_wset || (signal->new_wset->get_attached_output() != output))
         {
             return;
         }
@@ -116,8 +127,7 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
 
         if (view->has_data("wm-actions-above"))
         {
-            wf::scene::remove_child(view->get_root_node());
-            wf::scene::add_front(always_above, view->get_root_node());
+            wf::scene::readd_front(always_above, view->get_root_node());
         }
     };
 
@@ -135,8 +145,7 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
 
         if (ev->view->has_data("wm-actions-above") && !ev->view->minimized)
         {
-            wf::scene::remove_child(ev->view->get_root_node());
-            wf::scene::add_front(always_above, ev->view->get_root_node());
+            wf::scene::readd_front(always_above, ev->view->get_root_node());
         }
     };
 
@@ -252,7 +261,7 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
 
         if (showdesktop_active)
         {
-            for (auto& view : output->workspace->get_views_in_layer(wf::WM_LAYERS))
+            for (auto& view : output->wset()->get_views())
             {
                 if (!view->minimized)
                 {
@@ -298,18 +307,21 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
     {
         return execute_for_selected_view(ev.source, [this] (wayfire_view view)
         {
-            auto ws    = view->get_output()->workspace->get_current_workspace();
-            auto views =
-                view->get_output()->workspace->get_views_on_workspace(ws,
-                    wf::LAYER_WORKSPACE);
+            auto views = view->get_output()->wset()->get_views(
+                wf::WSET_CURRENT_WORKSPACE | wf::WSET_MAPPED_ONLY |
+                wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_SORT_STACKING);
+
             wayfire_view bottom_view = views[views.size() - 1];
             if (view != bottom_view)
             {
                 do_send_to_back(view);
                 // Change focus to the last focused view on this workspace
-                views =
-                    view->get_output()->workspace->get_views_on_workspace(ws,
-                        wf::LAYER_WORKSPACE);
+
+                // Update the list after restacking.
+                views = view->get_output()->wset()->get_views(
+                    wf::WSET_CURRENT_WORKSPACE | wf::WSET_MAPPED_ONLY |
+                    wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_SORT_STACKING);
+
                 view->get_output()->focus_view(views[0], false);
             }
 
@@ -323,8 +335,7 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
         workspace_changed.disconnect();
         view_minimized.disconnect();
 
-        for (auto& view : output->workspace->get_views_in_layer(
-            wf::ALL_LAYERS, true))
+        for (auto& view : output->wset()->get_views())
         {
             if (view->has_data("wm-actions-showdesktop"))
             {
@@ -339,11 +350,8 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
   public:
     void init() override
     {
-        always_above = std::make_shared<wf::scene::floating_inner_node_t>(true);
-        wf::scene::add_front(
-            output->node_for_layer(wf::scene::layer::WORKSPACE),
-            always_above);
-
+        always_above = std::make_shared<always_on_top_root_node_t>(output);
+        wf::scene::add_front(wf::get_core().scene()->layers[(int)wf::scene::layer::WORKSPACE], always_above);
         output->add_activator(toggle_showdesktop, &on_toggle_showdesktop);
         output->add_activator(minimize, &on_minimize);
         output->add_activator(toggle_maximize, &on_toggle_maximize);
@@ -358,7 +366,7 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
 
     void fini() override
     {
-        for (auto view : output->workspace->get_views_in_layer(wf::ALL_LAYERS, true))
+        for (auto view : output->wset()->get_views())
         {
             if (view->has_data("wm-actions-above"))
             {

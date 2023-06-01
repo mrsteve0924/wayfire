@@ -22,7 +22,8 @@ using wayfire_view = nonstd::observer_ptr<wf::view_interface_t>;
 namespace wf
 {
 class render_manager;
-class workspace_manager;
+class workspace_set_t;
+class output_workarea_manager_t;
 
 struct plugin_activation_data_t;
 
@@ -59,9 +60,22 @@ class output_t : public wf::object_base_t, public wf::signal::provider_t
     std::unique_ptr<render_manager> render;
 
     /**
-     * The workspace manager of this output
+     * The manager of the workspace area for this output.
      */
-    std::unique_ptr<workspace_manager> workspace;
+    std::unique_ptr<output_workarea_manager_t> workarea;
+
+    /**
+     * Get the current workspace set of the output.
+     */
+    virtual std::shared_ptr<workspace_set_t> wset() = 0;
+
+    /**
+     * Set the current workspace set.
+     *
+     * The old workspace set will become invisible (that is, necessary scenegraph nodes will be disabled), but
+     * it will remain attached to the output.
+     */
+    virtual void set_workspace_set(std::shared_ptr<workspace_set_t> wset) = 0;
 
     /**
      * Get a textual representation of the output
@@ -101,12 +115,6 @@ class output_t : public wf::object_base_t, public wf::signal::provider_t
 
     virtual std::shared_ptr<wf::scene::output_node_t> node_for_layer(
         wf::scene::layer layer) const = 0;
-
-    /**
-     * Get the workspace set of the output. This is a floating node which contains
-     * all the regular views of an output in the WORKSPACE layer.
-     */
-    virtual scene::floating_inner_ptr get_wset() const = 0;
 
     /**
      * Checks if a plugin can activate. This may not succeed if a plugin
@@ -157,11 +165,6 @@ class output_t : public wf::object_base_t, public wf::signal::provider_t
      *              otherwise.
      */
     virtual bool is_plugin_active(std::string owner_name) const = 0;
-
-    /**
-     * @return The topmost view in the workspace layer
-     */
-    wayfire_view get_top_view() const;
 
     /**
      * Get the most recently focused view on this output.

@@ -2,7 +2,9 @@
 #include "wayfire/plugins/common/util.hpp"
 #include "wayfire/render-manager.hpp"
 #include "wayfire/scene-input.hpp"
+#include "wayfire/scene.hpp"
 #include "wayfire/signal-definitions.hpp"
+#include "wayfire/view.hpp"
 #include <memory>
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/output.hpp>
@@ -26,7 +28,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
     wf::point_t convert_workspace_index_to_coords(int index)
     {
         index--; // compensate for indexing from 0
-        auto wsize = output->workspace->get_workspace_grid_size();
+        auto wsize = output->wset()->get_workspace_grid_size();
         int x = index % wsize.width;
         int y = index / wsize.width;
 
@@ -91,7 +93,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         for (const auto& [workspace, binding] : workspace_bindings.value())
         {
             int workspace_index = atoi(workspace.c_str());
-            auto wsize = output->workspace->get_workspace_grid_size();
+            auto wsize = output->wset()->get_workspace_grid_size();
             if ((workspace_index > (wsize.width * wsize.height)) ||
                 (workspace_index < 1))
             {
@@ -223,8 +225,9 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         if ((ev->focus_output == output) && can_handle_drag())
         {
             state.button_pressed = true;
-            auto [vw, vh] = output->workspace->get_workspace_grid_size();
+            auto [vw, vh] = output->wset()->get_workspace_grid_size();
             drag_helper->set_scale(std::max(vw, vh));
+            input_grab->set_wants_raw_input(true);
         }
     };
 
@@ -269,6 +272,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
             move_started_ws = offscreen_point;
         }
 
+        input_grab->set_wants_raw_input(false);
         this->state.button_pressed = false;
     };
 
@@ -289,7 +293,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         output->render->add_effect(&post_frame, wf::OUTPUT_EFFECT_POST);
         output->render->schedule_redraw();
 
-        auto cws = output->workspace->get_current_workspace();
+        auto cws = output->wset()->get_current_workspace();
         initial_ws = target_ws = cws;
 
         for (size_t i = 0; i < keyboard_select_cbs.size(); i++)
@@ -308,10 +312,10 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         if (zoom_in)
         {
             zoom_animation.set_start(wall->get_workspace_rectangle(
-                output->workspace->get_current_workspace()));
+                output->wset()->get_current_workspace()));
 
             /* Make sure workspaces are centered */
-            auto wsize = output->workspace->get_workspace_grid_size();
+            auto wsize = output->wset()->get_workspace_grid_size();
             auto size  = output->get_screen_size();
             const int maxdim = std::max(wsize.width, wsize.height);
             const int gap    = this->delimiter_offset;
@@ -341,7 +345,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
     {
         state.accepting_input = false;
         start_zoom(false);
-        output->workspace->set_workspace(target_ws);
+        output->wset()->set_workspace(target_ws);
         for (size_t i = 0; i < keyboard_select_cbs.size(); i++)
         {
             output->rem_binding(&keyboard_select_cbs[i]);
@@ -350,7 +354,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
 
     wf::geometry_t get_grid_geometry()
     {
-        auto wsize  = output->workspace->get_workspace_grid_size();
+        auto wsize  = output->wset()->get_workspace_grid_size();
         auto full_g = output->get_layout_geometry();
 
         wf::geometry_t grid;
@@ -388,9 +392,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
 
     void start_moving(wayfire_view view, wf::point_t grab)
     {
-        auto workspace_impl =
-            output->workspace->get_workspace_implementation();
-        if (!workspace_impl->view_movable(view))
+        if (!(view->get_allowed_actions() & (wf::VIEW_ALLOW_WS_CHANGE | wf::VIEW_ALLOW_MOVE)))
         {
             return;
         }
@@ -402,7 +404,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         // Make sure that the view is in output-local coordinates!
         translate_wobbly(view, grab - ws_coords);
 
-        auto [vw, vh] = output->workspace->get_workspace_grid_size();
+        auto [vw, vh] = output->wset()->get_workspace_grid_size();
         wf::move_drag::drag_options_t opts;
         opts.initial_scale   = std::max(vw, vh);
         opts.enable_snap_off = move_enable_snap_off &&
@@ -414,6 +416,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         drag_helper->start_drag(view, grab + output_offset,
             wf::move_drag::find_relative_grab(bbox, ws_coords), opts);
         move_started_ws = target_ws;
+        input_grab->set_wants_raw_input(true);
     }
 
     const wf::point_t offscreen_point = {-10, -10};
@@ -527,7 +530,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         }
 
         // ensure that the new target is valid (use wrap-around)
-        auto dim = output->workspace->get_workspace_grid_size();
+        auto dim = output->wset()->get_workspace_grid_size();
         target_ws.x = (target_ws.x + dim.width) % dim.width;
         target_ws.y = (target_ws.y + dim.height) % dim.height;
 
@@ -540,7 +543,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
      */
     void highlight_active_workspace()
     {
-        auto dim = output->workspace->get_workspace_grid_size();
+        auto dim = output->wset()->get_workspace_grid_size();
         for (int x = 0; x < dim.width; x++)
         {
             for (int y = 0; y < dim.height; y++)
@@ -585,7 +588,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
     {
         auto og = output->get_layout_geometry();
 
-        auto wsize = output->workspace->get_workspace_grid_size();
+        auto wsize = output->wset()->get_workspace_grid_size();
         float max  = std::max(wsize.width, wsize.height);
 
         float grid_start_x = og.width * (max - wsize.width) / float(max) / 2;
@@ -606,7 +609,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
     {
         input_coordinates_to_global_coordinates(ip.x, ip.y);
 
-        auto cws = output->workspace->get_current_workspace();
+        auto cws = output->wset()->get_current_workspace();
         auto og  = output->get_relative_geometry();
 
         /* Translate coordinates into output-local coordinate system,
@@ -617,40 +620,28 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         };
     }
 
-    /**
-     * If the view is sticky, return the pos relative to the current workspace.
-     * Otherwise, it stays the same.
-     */
-    wf::point_t view_local_coordinates(wayfire_view view, wf::point_t pos)
-    {
-        auto ssize = output->get_screen_size();
-        if (view->sticky)
-        {
-            return {
-                (pos.x % ssize.width + ssize.width) % ssize.width,
-                (pos.y % ssize.height + ssize.height) % ssize.height
-            };
-        } else
-        {
-            return pos;
-        }
-    }
-
     wayfire_view find_view_at_coordinates(int gx, int gy)
     {
         auto local = input_coordinates_to_output_local_coordinates({gx, gy});
-        /* TODO: adjust to delimiter offset */
-        for (auto& view : output->workspace->get_views_in_layer(wf::WM_LAYERS))
+        wf::pointf_t localf = {1.0 * local.x, 1.0 * local.y};
+
+        for (int i = int(wf::scene::layer::ALL_LAYERS) - 1; i >= 0; i--)
         {
-            if (!view->is_mapped())
+            auto isec = output->node_for_layer((wf::scene::layer)i)->find_node_at(localf);
+            auto node = isec ? isec->node.get() : nullptr;
+
+            if (auto view = wf::node_to_view(node))
             {
-                continue;
+                auto all_views = output->wset()->get_views();
+                if (std::find(all_views.begin(), all_views.end(), view) != all_views.end())
+                {
+                    return view;
+                }
             }
 
-            auto view_local = view_local_coordinates(view, local);
-            if (view->get_root_node()->find_node_at(wf::pointf_t{view_local}))
+            if (node)
             {
-                return view;
+                return nullptr;
             }
         }
 
@@ -690,7 +681,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
             return;
         }
 
-        auto size = this->output->workspace->get_workspace_grid_size();
+        auto size = this->output->wset()->get_workspace_grid_size();
         for (int x = 0; x < size.width; x++)
         {
             for (int y = 0; y < size.height; y++)
@@ -706,7 +697,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
 
     void resize_ws_fade()
     {
-        auto size = this->output->workspace->get_workspace_grid_size();
+        auto size = this->output->wset()->get_workspace_grid_size();
         ws_fade.resize(size.width);
         for (auto& v : ws_fade)
         {
@@ -729,7 +720,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         resize_ws_fade();
 
         // check that the target and initial workspaces are still in the grid
-        auto size = this->output->workspace->get_workspace_grid_size();
+        auto size = this->output->wset()->get_workspace_grid_size();
         initial_ws.x = std::min(initial_ws.x, size.width - 1);
         initial_ws.y = std::min(initial_ws.y, size.height - 1);
 

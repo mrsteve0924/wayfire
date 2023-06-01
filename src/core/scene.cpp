@@ -66,6 +66,11 @@ std::string node_t::stringify_flags() const
         fl += "d";
     }
 
+    if (flags() & ((int)node_flags::RAW_INPUT))
+    {
+        fl += "R";
+    }
+
     return "(" + fl + ")";
 }
 
@@ -95,6 +100,11 @@ wf::keyboard_focus_node_t node_t::keyboard_refocus(wf::output_t *output)
 
     for (auto& ch : this->get_children())
     {
+        if (!ch->is_enabled())
+        {
+            continue;
+        }
+
         auto ch_focus = ch->keyboard_refocus(output);
         result = std::max(result, ch_focus);
 
@@ -276,9 +286,7 @@ wf::geometry_t node_t::get_bounding_box()
 }
 
 // ------------------------------ output_node_t --------------------------------
-// FIXME: output nodes are actually structure nodes, but we need to add and
-// remove them dynamically ...
-output_node_t::output_node_t(wf::output_t *output) : floating_inner_node_t(false)
+output_node_t::output_node_t(wf::output_t *output) : floating_inner_node_t(true)
 {
     this->output = output;
 }

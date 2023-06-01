@@ -2,12 +2,13 @@
 #include "wayfire/object.hpp"
 #include "wayfire/output.hpp"
 #include "wayfire/util.hpp"
+#include "wayfire/view-helpers.hpp"
 #include <sys/types.h>
 #include <chrono>
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/view.hpp>
 #include <wayfire/core.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/output-layout.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
@@ -164,9 +165,9 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
         }
 
         core_data->output_saved_workspace[identifier] =
-            output->workspace->get_current_workspace();
+            output->wset()->get_current_workspace();
 
-        auto views = output->workspace->get_views_in_layer(wf::LAYER_WORKSPACE);
+        auto views = output->wset()->get_views();
         for (size_t i = 0; i < views.size(); i++)
         {
             auto view = views[i];
@@ -198,7 +199,7 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
         // directly on the correct workspace.
         if (core_data->output_saved_workspace.count(identifier))
         {
-            output->workspace->set_workspace(
+            output->wset()->set_workspace(
                 core_data->output_saved_workspace[identifier]);
         }
 
@@ -245,7 +246,7 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
             LOGD("Restoring view: ",
                 view->get_title(), " to: ", output->to_string());
 
-            wf::get_core().move_view_to_output(view, output, false);
+            move_view_to_output(view, output, false);
             view->set_fullscreen(last_output_info->fullscreen);
             view->set_minimized(last_output_info->minimized);
             if (last_output_info->tiled_edges != 0)
@@ -263,7 +264,7 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
             }
 
             // Z Order
-            output->workspace->bring_to_front(view);
+            wf::view_bring_to_front(view);
 
             // Remove all last output info from views
             view_erase_data(view);

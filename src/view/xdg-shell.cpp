@@ -5,14 +5,18 @@
 #include "surface-impl.hpp"
 #include "wayfire/output.hpp"
 #include "wayfire/decorator.hpp"
+#include "wayfire/scene-operations.hpp"
+#include "wayfire/scene.hpp"
+#include "wayfire/view-helpers.hpp"
 #include "wayfire/view.hpp"
 #include "xdg-shell.hpp"
 #include "wayfire/output-layout.hpp"
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/unstable/wlr-view-events.hpp>
 
 #include "xdg-shell/xdg-toplevel-view.hpp"
+#include "view-keyboard-interaction.hpp"
 
 wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) :
     wf::wlr_view_t()
@@ -22,6 +26,32 @@ wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) :
     this->role  = wf::VIEW_ROLE_UNMANAGED;
     this->priv->keyboard_focus_enabled = false;
     this->set_output(popup_parent->get_output());
+
+    if (!dynamic_cast<wayfire_xdg_popup*>(popup_parent.get()))
+    {
+        // 'toplevel' popups are responsible for closing their popup tree when the parent loses focus.
+        // Note: we shouldn't close nested popups manually, since the parent popups will destroy them as well.
+        this->on_keyboard_focus_changed = [=] (wf::keyboard_focus_changed_signal *ev)
+        {
+            if (ev->new_focus != popup_parent->get_surface_root_node())
+            {
+                this->close();
+
+                // FIXME: hack to get focus working immediately after the popup is closed. The problem is that
+                // the focus was given over to the node, but wlroots has an underlying grab for popups, so the
+                // new surface has not received focus yet.
+                // When the popup is closed, we need to re-enter the new node, however, we can only safely do
+                // that for wlroots surfaces. Other nodes are not affected by wlroots grabs anyway.
+                if (ev->new_focus &&
+                    dynamic_cast<view_keyboard_interaction_t*>(&ev->new_focus->keyboard_interaction()))
+                {
+                    ev->new_focus->keyboard_interaction().handle_keyboard_enter(wf::get_core().seat.get());
+                }
+            }
+        };
+
+        wf::get_core().connect(&on_keyboard_focus_changed);
+    }
 }
 
 void wayfire_xdg_popup::initialize()
@@ -31,7 +61,6 @@ void wayfire_xdg_popup::initialize()
     on_map.set_callback([&] (void*) { map(this->popup->base->surface); });
     on_unmap.set_callback([&] (void*)
     {
-        pending_close.disconnect();
         unmap();
     });
     on_destroy.set_callback([&] (void*) { destroy(); });
@@ -73,17 +102,14 @@ void wayfire_xdg_popup::initialize()
 
 void wayfire_xdg_popup::map(wlr_surface *surface)
 {
-    uint32_t parent_layer =
-        get_output()->workspace->get_view_layer(popup_parent->self());
-
-    wf::layer_t target_layer = wf::LAYER_UNMANAGED;
-    if (parent_layer > wf::LAYER_WORKSPACE)
+    wf::scene::layer parent_layer = wf::get_view_layer(popup_parent).value_or(wf::scene::layer::WORKSPACE);
+    auto target_layer = wf::scene::layer::UNMANAGED;
+    if ((int)parent_layer > (int)wf::scene::layer::WORKSPACE)
     {
-        target_layer = (wf::layer_t)parent_layer;
+        target_layer = parent_layer;
     }
 
-    get_output()->workspace->add_view(self(), target_layer);
-
+    wf::scene::readd_front(get_output()->node_for_layer(target_layer), get_root_node());
     wlr_view_t::map(surface);
     update_position();
 }
@@ -166,13 +192,10 @@ void wayfire_xdg_popup::destroy()
 
 void wayfire_xdg_popup::close()
 {
-    pending_close.run_once([=] ()
+    if (is_mapped())
     {
-        if (is_mapped())
-        {
-            wlr_xdg_popup_destroy(popup);
-        }
-    });
+        wlr_xdg_popup_destroy(popup);
+    }
 }
 
 void wayfire_xdg_popup::ping()

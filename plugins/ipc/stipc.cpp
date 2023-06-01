@@ -2,9 +2,10 @@
 #include "wayfire/plugin.hpp"
 #include "wayfire/plugins/common/shared-core-data.hpp"
 #include "wayfire/util.hpp"
+#include "wayfire/view-helpers.hpp"
 #include <wayfire/view.hpp>
 #include <wayfire/output.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/output-layout.hpp>
 #include <getopt.h>
 #include <wayland-server-core.h>
@@ -50,36 +51,42 @@ static void locate_wayland_backend(wlr_backend *backend, void *data)
 
 namespace wf
 {
-static std::string layer_to_string(uint32_t layer)
+static std::string layer_to_string(std::optional<wf::scene::layer> layer)
 {
-    switch (layer)
+    if (!layer.has_value())
     {
-      case LAYER_BACKGROUND:
+        return "none";
+    }
+
+    switch (layer.value())
+    {
+      case wf::scene::layer::BACKGROUND:
         return "background";
 
-      case LAYER_BOTTOM:
+      case wf::scene::layer::BOTTOM:
         return "bottom";
 
-      case LAYER_WORKSPACE:
+      case wf::scene::layer::WORKSPACE:
         return "workspace";
 
-      case LAYER_TOP:
+      case wf::scene::layer::TOP:
         return "top";
 
-      case LAYER_UNMANAGED:
+      case wf::scene::layer::UNMANAGED:
         return "unmanaged";
 
-      case LAYER_LOCK:
+      case wf::scene::layer::OVERLAY:
         return "lock";
 
-      case LAYER_DESKTOP_WIDGET:
+      case wf::scene::layer::DWIDGET:
         return "dew";
 
       default:
         break;
     }
 
-    return "none";
+    wf::dassert(false, "invalid layer!");
+    assert(false); // prevent compiler warning
 }
 
 static const struct wlr_pointer_impl pointer_impl = {
@@ -360,13 +367,7 @@ class stipc_plugin_t : public wf::plugin_interface_t
                 {"minimized", view->minimized},
             };
 
-            uint32_t layer = -1;
-            if (view->get_output())
-            {
-                layer = view->get_output()->workspace->get_view_layer(view);
-            }
-
-            v["layer"] = layer_to_string(layer);
+            v["layer"] = layer_to_string(get_view_layer(view));
 
             response.push_back(v);
         }
@@ -406,7 +407,7 @@ class stipc_plugin_t : public wf::plugin_interface_t
                     return wf::ipc::json_error("Unknown output " + (std::string)v["output"]);
                 }
 
-                wf::get_core().move_view_to_output(*it, wo, false);
+                move_view_to_output(*it, wo, false);
             }
 
             wf::geometry_t g{v["x"], v["y"], v["width"], v["height"]};

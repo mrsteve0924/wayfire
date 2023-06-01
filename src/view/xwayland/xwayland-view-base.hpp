@@ -2,13 +2,15 @@
 
 #include "config.h"
 #include <wayfire/output-layout.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
+#include <wayfire/workarea.hpp>
 #include <wayfire/signal-definitions.hpp>
 
 #include "../view-impl.hpp"
 #include "wayfire/geometry.hpp"
 #include "wayfire/view.hpp"
 #include "xwayland-helpers.hpp"
+#include <wayfire/scene-operations.hpp>
 
 #if WF_HAS_XWAYLAND
 
@@ -145,10 +147,7 @@ class wayfire_xwayland_view_base : public wf::view_interface_t
             data.view = self();
 
             this->emit(&data);
-            if (get_output())
-            {
-                get_output()->emit(&data);
-            }
+            wf::get_core().emit(&data);
         }
     }
 
@@ -181,7 +180,8 @@ class wayfire_xwayland_view_base : public wf::view_interface_t
         {
             if (!parent)
             {
-                get_output()->workspace->add_view(self(), wf::LAYER_WORKSPACE);
+                wf::scene::readd_front(get_output()->wset()->get_node(), get_root_node());
+                get_output()->wset()->add_view(self());
             }
 
             get_output()->focus_view(self(), true);
@@ -391,7 +391,7 @@ class wayfire_xwayland_view_base : public wf::view_interface_t
         if (o)
         {
             auto view_workarea = (fullscreen ?
-                o->get_relative_geometry() : o->workspace->get_workarea());
+                o->get_relative_geometry() : o->workarea->get_workarea());
             auto og = o->get_layout_geometry();
             configure_geometry.x -= og.x;
             configure_geometry.y -= og.y;

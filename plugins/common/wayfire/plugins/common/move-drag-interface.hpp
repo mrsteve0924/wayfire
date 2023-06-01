@@ -19,7 +19,7 @@
 #include <wayfire/nonstd/observer_ptr.h>
 #include <wayfire/render-manager.hpp>
 #include <wayfire/signal-provider.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/view-transform.hpp>
 #include <wayfire/util/duration.hpp>
 #include <wayfire/util/log.hpp>
@@ -654,11 +654,15 @@ class core_drag_t : public signal::provider_t
     void update_current_output(wf::point_t grab)
     {
         wf::pointf_t origin = {1.0 * grab.x, 1.0 * grab.y};
-        auto output =
-            wf::get_core().output_layout->get_output_coords_at(origin, origin);
+        auto output = wf::get_core().output_layout->get_output_coords_at(origin, origin);
 
         if (output != current_output)
         {
+            if (current_output)
+            {
+                current_output->render->rem_effect(&on_pre_frame);
+            }
+
             drag_focus_output_signal data;
             data.previous_focus_output = current_output;
 
@@ -666,8 +670,24 @@ class core_drag_t : public signal::provider_t
             data.focus_output = output;
             wf::get_core().focus_output(output);
             emit(&data);
+
+            if (output)
+            {
+                current_output->render->add_effect(&on_pre_frame, OUTPUT_EFFECT_PRE);
+            }
         }
     }
+
+    wf::effect_hook_t on_pre_frame = [=] ()
+    {
+        for (auto& v : this->all_views)
+        {
+            if (v.transformer->scale_factor.running())
+            {
+                v.view->damage();
+            }
+        }
+    };
 
     wf::signal::connection_t<view_unmapped_signal> on_view_unmap = [=] (auto *ev)
     {
@@ -693,7 +713,7 @@ inline void adjust_view_on_output(drag_done_signal *ev)
 
     if (parent->get_output() != ev->focused_output)
     {
-        wf::get_core().move_view_to_output(parent, ev->focused_output, false);
+        move_view_to_output(parent, ev->focused_output, false);
     }
 
     // Calculate the position we're leaving the view on
@@ -701,14 +721,14 @@ inline void adjust_view_on_output(drag_done_signal *ev)
     auto grab = ev->grab_position + output_delta;
 
     auto output_geometry = ev->focused_output->get_relative_geometry();
-    auto current_ws = ev->focused_output->workspace->get_current_workspace();
+    auto current_ws = ev->focused_output->wset()->get_current_workspace();
     wf::point_t target_ws{
         (int)std::floor(1.0 * grab.x / output_geometry.width),
         (int)std::floor(1.0 * grab.y / output_geometry.height),
     };
     target_ws = target_ws + current_ws;
 
-    auto gsize = ev->focused_output->workspace->get_workspace_grid_size();
+    auto gsize = ev->focused_output->wset()->get_workspace_grid_size();
     target_ws.x = wf::clamp(target_ws.x, 0, gsize.width - 1);
     target_ws.y = wf::clamp(target_ws.y, 0, gsize.height - 1);
 
@@ -750,7 +770,7 @@ inline void adjust_view_on_output(drag_done_signal *ev)
     // Ensure that every view is visible on parent's main workspace
     for (auto& v : parent->enumerate_views())
     {
-        ev->focused_output->workspace->move_to_workspace(v, target_ws);
+        ev->focused_output->wset()->move_to_workspace(v, target_ws);
     }
 
     ev->focused_output->focus_view(focus_view, true);

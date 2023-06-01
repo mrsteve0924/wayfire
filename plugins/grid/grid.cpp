@@ -2,7 +2,8 @@
 #include <wayfire/output.hpp>
 #include <wayfire/core.hpp>
 #include <wayfire/view.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workarea.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/render-manager.hpp>
 #include <algorithm>
 #include <cmath>
@@ -164,11 +165,8 @@ class wayfire_grid : public wf::per_output_plugin_instance_t
 
     bool can_adjust_view(wayfire_view view)
     {
-        auto workspace_impl =
-            output->workspace->get_workspace_implementation();
-
-        return workspace_impl->view_movable(view) &&
-               workspace_impl->view_resizable(view);
+        uint32_t req_actions = wf::VIEW_ALLOW_MOVE | wf::VIEW_ALLOW_RESIZE;
+        return (view->get_allowed_actions() & req_actions) == req_actions;
     }
 
     void handle_slot(wayfire_view view, int slot, wf::point_t delta = {0, 0})
@@ -191,7 +189,7 @@ class wayfire_grid : public wf::per_output_plugin_instance_t
      * */
     wf::geometry_t get_slot_dimensions(int n)
     {
-        auto area = output->workspace->get_workarea();
+        auto area = output->workarea->get_workarea();
         int w2    = area.width / 2;
         int h2    = area.height / 2;
 
@@ -219,13 +217,8 @@ class wayfire_grid : public wf::per_output_plugin_instance_t
     wf::signal::connection_t<wf::workarea_changed_signal> on_workarea_changed =
         [=] (wf::workarea_changed_signal *ev)
     {
-        for (auto& view : output->workspace->get_views_in_layer(wf::LAYER_WORKSPACE))
+        for (auto& view : output->wset()->get_views(wf::WSET_MAPPED_ONLY))
         {
-            if (!view->is_mapped())
-            {
-                continue;
-            }
-
             auto data = view->get_data_safe<wf_grid_slot_data>();
 
             /* Detect if the view was maximized outside of the grid plugin */
@@ -269,7 +262,7 @@ class wayfire_grid : public wf::per_output_plugin_instance_t
     wf::geometry_t adjust_for_workspace(wf::geometry_t geometry,
         wf::point_t workspace)
     {
-        auto delta_ws = workspace - output->workspace->get_current_workspace();
+        auto delta_ws = workspace - output->wset()->get_current_workspace();
         auto scr_size = output->get_screen_size();
         geometry.x += delta_ws.x * scr_size.width;
         geometry.y += delta_ws.y * scr_size.height;

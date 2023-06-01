@@ -1,5 +1,6 @@
 #include <memory>
 #include <wayfire/util/log.hpp>
+#include <wayfire/workarea.hpp>
 #include "../core/core-impl.hpp"
 #include "view-impl.hpp"
 #include "wayfire/geometry.hpp"
@@ -9,7 +10,7 @@
 #include "wayfire/scene.hpp"
 #include "wayfire/view.hpp"
 #include "wayfire/view-transform.hpp"
-#include "wayfire/workspace-manager.hpp"
+#include "wayfire/workspace-set.hpp"
 #include "wayfire/render-manager.hpp"
 #include "xdg-shell.hpp"
 #include "../core/seat/input-manager.hpp"
@@ -40,7 +41,7 @@ static void reposition_relative_to_parent(wayfire_view view)
     };
 
     auto workarea = view->get_output()->render->get_ws_box(
-        view->get_output()->workspace->get_current_workspace() + parent_ws);
+        view->get_output()->wset()->get_current_workspace() + parent_ws);
     if (view->parent->is_mapped())
     {
         auto parent_g = view->parent->get_wm_geometry();
@@ -125,7 +126,7 @@ void wf::view_interface_t::set_toplevel_parent(wayfire_view new_parent)
         /* Make sure the view is available only as a child */
         if (this->get_output())
         {
-            this->get_output()->workspace->remove_view(self());
+            this->get_output()->wset()->remove_view(self());
         }
 
         this->set_output(parent->get_output());
@@ -135,17 +136,15 @@ void wf::view_interface_t::set_toplevel_parent(wayfire_view new_parent)
             reposition_relative_to_parent(self());
         }
 
-        wf::scene::add_front(parent->get_root_node(),
-            this->get_root_node());
+        wf::scene::readd_front(parent->get_root_node(), this->get_root_node());
         check_refocus_parent(parent);
     } else if (old_parent)
     {
         /* At this point, we are a regular view. */
         if (this->get_output())
         {
-            this->get_output()->workspace->add_view(
-                self(), wf::LAYER_WORKSPACE);
-
+            wf::scene::readd_front(get_output()->wset()->get_node(), get_root_node());
+            get_output()->wset()->add_view(self());
             check_refocus_parent(old_parent);
         }
     }
@@ -195,11 +194,8 @@ void wf::view_interface_t::set_output(wf::output_t *new_output)
     /* Make sure the view doesn't stay on the old output */
     if (get_output() && (get_output() != new_output))
     {
-        /* Emit view-layer-detached first */
-        get_output()->workspace->remove_view(self());
         view_disappeared_signal data_disappeared;
         data_disappeared.view = self();
-
         get_output()->emit(&data_disappeared);
     }
 
@@ -435,7 +431,7 @@ void wf::view_interface_t::tile_request(uint32_t edges)
 {
     if (get_output())
     {
-        tile_request(edges, get_output()->workspace->get_current_workspace());
+        tile_request(edges, get_output()->wset()->get_current_workspace());
     }
 }
 
@@ -446,7 +442,7 @@ static void move_to_workspace(wf::view_interface_t *view, wf::point_t workspace)
 {
     auto output = view->get_output();
     auto wm_geometry = view->get_wm_geometry();
-    auto delta    = workspace - output->workspace->get_current_workspace();
+    auto delta    = workspace - output->wset()->get_current_workspace();
     auto scr_size = output->get_screen_size();
 
     wm_geometry.x += scr_size.width * delta.x;
@@ -467,7 +463,7 @@ void wf::view_interface_t::view_priv_impl::update_windowed_geometry(
     if (self->get_output())
     {
         this->windowed_geometry_workarea =
-            self->get_output()->workspace->get_workarea();
+            self->get_output()->workarea->get_workarea();
     } else
     {
         this->windowed_geometry_workarea = {0, 0, -1, -1};
@@ -484,7 +480,7 @@ wf::geometry_t wf::view_interface_t::view_priv_impl::calculate_windowed_geometry
 
     const auto& geom     = last_windowed_geometry;
     const auto& old_area = windowed_geometry_workarea;
-    const auto& new_area = output->workspace->get_workarea();
+    const auto& new_area = output->workarea->get_workarea();
     return {
         .x = new_area.x + (geom.x - old_area.x) * new_area.width /
             old_area.width,
@@ -506,7 +502,7 @@ void wf::view_interface_t::tile_request(uint32_t edges, wf::point_t workspace)
     data.view  = self();
     data.edges = edges;
     data.workspace    = workspace;
-    data.desired_size = edges ? get_output()->workspace->get_workarea() :
+    data.desired_size = edges ? get_output()->workarea->get_workarea() :
         priv->calculate_windowed_geometry(get_output());
 
     set_tiled(edges);
@@ -563,7 +559,7 @@ void wf::view_interface_t::fullscreen_request(wf::output_t *out, bool state)
     if (wo)
     {
         fullscreen_request(wo, state,
-            wo->workspace->get_current_workspace());
+            wo->wset()->get_current_workspace());
     }
 }
 
@@ -577,7 +573,7 @@ void wf::view_interface_t::fullscreen_request(wf::output_t *out, bool state,
      * fullscreened? We should make sure that it stays visible there */
     if (get_output() != wo)
     {
-        wf::get_core().move_view_to_output(self(), wo, false);
+        wf::move_view_to_output(self(), wo, false);
     }
 
     view_fullscreen_request_signal data;
@@ -589,7 +585,7 @@ void wf::view_interface_t::fullscreen_request(wf::output_t *out, bool state,
     if (!state)
     {
         data.desired_size = this->tiled_edges ?
-            this->get_output()->workspace->get_workarea() :
+            this->get_output()->workarea->get_workarea() :
             this->priv->calculate_windowed_geometry(get_output());
     }
 
@@ -684,7 +680,7 @@ void wf::view_interface_t::set_decoration(
     {
         target_wm_geometry = priv->frame->expand_wm_geometry(wm);
         // make sure that the view doesn't go outside of the screen or such
-        auto wa = get_output()->workspace->get_workarea();
+        auto wa = get_output()->workarea->get_workarea();
         auto visible = wf::geometry_intersection(target_wm_geometry, wa);
         if (visible != target_wm_geometry)
         {
@@ -696,7 +692,7 @@ void wf::view_interface_t::set_decoration(
         target_wm_geometry = get_output()->get_relative_geometry();
     } else if (this->tiled_edges)
     {
-        target_wm_geometry = get_output()->workspace->get_workarea();
+        target_wm_geometry = get_output()->workarea->get_workarea();
     }
 
     set_geometry(target_wm_geometry);
@@ -756,7 +752,7 @@ wf::view_interface_t::view_interface_t()
     take_ref();
 }
 
-wf::view_interface_t::view_interface_t(scene::floating_inner_ptr surface_root_node) : view_interface_t()
+void wf::view_interface_t::set_surface_root_node(scene::floating_inner_ptr surface_root_node)
 {
     this->priv->surface_root_node = surface_root_node;
 }
@@ -860,8 +856,8 @@ void wf::view_damage_raw(wayfire_view view, const wlr_box& box)
     /* Sticky views are visible on all workspaces. */
     if (view->sticky)
     {
-        auto wsize = output->workspace->get_workspace_grid_size();
-        auto cws   = output->workspace->get_current_workspace();
+        auto wsize = output->wset()->get_workspace_grid_size();
+        auto cws   = output->wset()->get_current_workspace();
 
         /* Damage only the visible region of the shell view.
          * This prevents hidden panels from spilling damage onto other workspaces */
@@ -890,6 +886,7 @@ void wf::view_damage_raw(wayfire_view view, const wlr_box& box)
 void wf::view_interface_t::destruct()
 {
     view_destruct_signal ev;
+    ev.view = self();
     this->emit(&ev);
     wf::get_core_impl().erase_view(self());
 }
@@ -945,4 +942,19 @@ wl_client*wf::view_interface_t::get_client()
 wlr_surface*wf::view_interface_t::get_wlr_surface()
 {
     return priv->wsurface;
+}
+
+void wf::view_interface_t::set_allowed_actions(uint32_t actions) const
+{
+    priv->allowed_actions = actions;
+}
+
+uint32_t wf::view_interface_t::get_allowed_actions() const
+{
+    return priv->allowed_actions;
+}
+
+std::shared_ptr<wf::workspace_set_t> wf::view_interface_t::get_wset()
+{
+    return priv->current_wset.lock();
 }

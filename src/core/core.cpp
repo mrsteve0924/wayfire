@@ -1,8 +1,11 @@
 /* Needed for pipe2 */
 #ifndef _GNU_SOURCE
     #define _GNU_SOURCE
+    #include "wayfire/scene.hpp"
 #endif
 
+#include <wayfire/workarea.hpp>
+#include "wayfire/scene-operations.hpp"
 #include "wayfire/txn/transaction-manager.hpp"
 #include "wayfire/bindings-repository.hpp"
 #include "wayfire/util.hpp"
@@ -23,7 +26,7 @@
 #include <wayfire/output.hpp>
 #include <wayfire/util/log.hpp>
 #include <wayfire/output-layout.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
 
@@ -251,11 +254,11 @@ void wf::compositor_core_impl_t::warp_cursor(wf::pointf_t pos)
     seat->priv->cursor->warp_cursor(pos);
 }
 
-void wf::compositor_core_impl_t::transfer_grab(wf::scene::node_ptr node, bool retain_pressed_state)
+void wf::compositor_core_impl_t::transfer_grab(wf::scene::node_ptr node)
 {
-    seat->priv->transfer_grab(node, retain_pressed_state);
-    seat->priv->lpointer->transfer_grab(node, retain_pressed_state);
-    seat->priv->touch->transfer_grab(node, retain_pressed_state);
+    seat->priv->transfer_grab(node);
+    seat->priv->lpointer->transfer_grab(node);
+    seat->priv->touch->transfer_grab(node);
 
     for (auto dev : this->get_input_devices())
     {
@@ -422,21 +425,6 @@ std::vector<wayfire_view> wf::compositor_core_impl_t::get_all_views()
     return result;
 }
 
-void wf::compositor_core_impl_t::focus_view(wayfire_view v)
-{
-    if (!v)
-    {
-        return;
-    }
-
-    if (v->get_output() != active_output)
-    {
-        focus_output(v->get_output());
-    }
-
-    active_output->focus_view(v, true);
-}
-
 void wf::compositor_core_impl_t::erase_view(wayfire_view v)
 {
     if (!v)
@@ -449,6 +437,7 @@ void wf::compositor_core_impl_t::erase_view(wayfire_view v)
         v->set_output(nullptr);
     }
 
+    wf::scene::remove_child(v->get_root_node());
     auto it = std::find_if(views.begin(), views.end(),
         [&v] (const auto& view) { return view.get() == v.get(); });
 
@@ -531,15 +520,11 @@ std::string wf::compositor_core_impl_t::get_xwayland_display()
     return xwayland_get_display();
 }
 
-void wf::compositor_core_impl_t::move_view_to_output(wayfire_view v,
-    wf::output_t *new_output, bool reconfigure)
+void wf::move_view_to_output(wayfire_view v, wf::output_t *new_output, bool reconfigure)
 {
     auto old_output = v->get_output();
-    wf::view_pre_moved_to_output_signal data;
-    data.view = v;
-    data.old_output = old_output;
-    data.new_output = new_output;
-    this->emit(&data);
+    auto old_wset   = v->get_wset();
+    emit_view_pre_moved_to_wset_pre(v, old_wset, new_output->wset());
 
     uint32_t edges;
     bool fullscreen;
@@ -563,8 +548,15 @@ void wf::compositor_core_impl_t::move_view_to_output(wayfire_view v,
     }
 
     assert(new_output);
-    v->set_output(new_output);
-    new_output->workspace->add_view(v, wf::LAYER_WORKSPACE);
+
+    if (old_output)
+    {
+        old_output->wset()->remove_view(v);
+        wf::scene::remove_child(v->get_root_node());
+    }
+
+    wf::scene::add_front(new_output->wset()->get_node(), v->get_root_node());
+    new_output->wset()->add_view(v);
     new_output->focus_view(v);
 
     if (reconfigure)
@@ -577,12 +569,12 @@ void wf::compositor_core_impl_t::move_view_to_output(wayfire_view v,
             v->tile_request(edges);
         } else
         {
-            auto new_g = wf::clamp(view_g, new_output->workspace->get_workarea());
+            auto new_g = wf::clamp(view_g, new_output->workarea->get_workarea());
             v->set_geometry(new_g);
         }
     }
 
-    this->emit(&data);
+    emit_view_moved_to_wset(v, old_wset, new_output->wset());
 }
 
 const std::shared_ptr<wf::scene::root_node_t>& wf::compositor_core_impl_t::scene()

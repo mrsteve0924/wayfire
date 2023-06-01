@@ -68,6 +68,12 @@ enum class logging_category : size_t
     WLR     = 3,
     // Direct scanout
     SCANOUT = 4,
+    // Pointer events
+    POINTER = 5,
+    // Workspace set events
+    WSET    = 6,
+    // Keyboard-related events
+    KBD     = 7,
     TOTAL,
 };
 

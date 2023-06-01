@@ -8,12 +8,13 @@
 #include "wayfire/scene-input.hpp"
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/scene.hpp"
+#include "wayfire/view-helpers.hpp"
 #include "wayfire/view.hpp"
 #include "../core/core-impl.hpp"
 #include "wayfire/signal-definitions.hpp"
 #include "wayfire/render-manager.hpp"
 #include "wayfire/output-layout.hpp"
-#include "wayfire/workspace-manager.hpp"
+#include "wayfire/workspace-set.hpp"
 #include "wayfire/compositor-view.hpp"
 #include "../core/seat/input-manager.hpp"
 #include "../view/xdg-shell.hpp"
@@ -21,6 +22,7 @@
 #include <wayfire/config/types.hpp>
 #include <wayfire/util/log.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
+#include <wayfire/workarea.hpp>
 
 #include <algorithm>
 #include <assert.h>
@@ -42,35 +44,52 @@ void wf::output_impl_t::handle_view_removed(wayfire_view view)
     refocus();
 }
 
+void wf::output_impl_t::update_node_limits()
+{
+    static wf::option_wrapper_t<bool> remove_output_limits{"workarounds/remove_output_limits"};
+    for (int i = 0; i < (int)wf::scene::layer::ALL_LAYERS; i++)
+    {
+        if (remove_output_limits)
+        {
+            node_for_layer((wf::scene::layer)i)->limit_region.reset();
+        } else
+        {
+            node_for_layer((wf::scene::layer)i)->limit_region = get_layout_geometry();
+        }
+    }
+
+    wf::scene::update(wf::get_core().scene(), scene::update_flag::INPUT_STATE);
+}
+
 wf::output_impl_t::output_impl_t(wlr_output *handle,
     const wf::dimensions_t& effective_size)
 {
     this->set_effective_size(effective_size);
     this->handle = handle;
 
-    wf::option_wrapper_t<bool> remove_output_limits{
-        "workarounds/remove_output_limits"};
-
     auto& root = wf::get_core().scene();
     for (size_t layer = 0; layer < (size_t)scene::layer::ALL_LAYERS; layer++)
     {
         nodes[layer] = std::make_shared<scene::output_node_t>(this);
-        if (!remove_output_limits)
-        {
-            nodes[layer]->limit_region = get_layout_geometry();
-        }
-
         scene::add_back(root->layers[layer], nodes[layer]);
     }
 
-    wset = std::make_shared<scene::floating_inner_node_t>(true);
-    scene::add_front(node_for_layer(scene::layer::WORKSPACE), wset);
+    update_node_limits();
 
-    workspace = std::make_unique<workspace_manager>(this);
-    render    = std::make_unique<render_manager>(this);
+    workarea = std::make_unique<output_workarea_manager_t>(this);
+    this->set_workspace_set(std::make_shared<workspace_set_t>());
+
+    render = std::make_unique<render_manager>(this);
+    promotion_manager = std::make_unique<promotion_manager_t>(this);
 
     on_view_disappeared.set_callback([=] (view_disappeared_signal *ev) { handle_view_removed(ev->view); });
+    on_configuration_changed = [=] (wf::output_configuration_changed_signal *ev)
+    {
+        update_node_limits();
+    };
+
     connect(&on_view_disappeared);
+    connect(&on_configuration_changed);
 }
 
 std::shared_ptr<wf::scene::output_node_t> wf::output_impl_t::node_for_layer(
@@ -79,9 +98,35 @@ std::shared_ptr<wf::scene::output_node_t> wf::output_impl_t::node_for_layer(
     return nodes[(int)layer];
 }
 
-wf::scene::floating_inner_ptr wf::output_impl_t::get_wset() const
+std::shared_ptr<wf::workspace_set_t> wf::output_impl_t::wset()
 {
-    return this->wset;
+    return current_wset;
+}
+
+void wf::output_impl_t::set_workspace_set(std::shared_ptr<workspace_set_t> wset)
+{
+    if (current_wset == wset)
+    {
+        return;
+    }
+
+    wf::dassert(wset != nullptr, "Workspace set should not be null!");
+
+    if (this->current_wset)
+    {
+        this->current_wset->set_visible(false);
+    }
+
+    wset->attach_to_output(this);
+    wset->set_visible(true);
+    this->current_wset = wset;
+
+    workspace_set_changed_signal data;
+    data.new_wset = wset;
+    data.output   = this;
+    this->emit(&data);
+
+    refocus();
 }
 
 std::string wf::output_t::to_string() const
@@ -102,6 +147,7 @@ void wf::output_impl_t::do_update_focus(wf::scene::node_t *new_focus)
 void wf::output_impl_t::refocus()
 {
     auto new_focus = wf::get_core().scene()->keyboard_refocus(this);
+    LOGC(KBD, "Output ", this->to_string(), " refocusing: choosing node ", new_focus.node);
     if (auto view = node_to_view(new_focus.node))
     {
         update_active_view(view);
@@ -227,33 +273,10 @@ bool wf::output_t::ensure_visible(wayfire_view v)
 
     int dvx  = std::floor(1.0 * dx / g.width);
     int dvy  = std::floor(1.0 * dy / g.height);
-    auto cws = workspace->get_current_workspace();
-    workspace->request_workspace(cws + wf::point_t{dvx, dvy});
+    auto cws = wset()->get_current_workspace();
+    wset()->request_workspace(cws + wf::point_t{dvx, dvy});
 
     return true;
-}
-
-void wf::output_impl_t::close_popups()
-{
-    for (auto& v : workspace->get_views_in_layer(wf::ALL_LAYERS))
-    {
-        auto popup = dynamic_cast<wayfire_xdg_popup*>(v.get());
-        if (!popup || (popup->popup_parent == get_active_view()))
-        {
-            continue;
-        }
-
-        /* Ignore popups which have a popup as their parent. In those cases, we'll
-         * close the topmost popup and this will recursively destroy the others.
-         *
-         * Otherwise we get a race condition with wlroots. */
-        if (dynamic_cast<wayfire_xdg_popup*>(popup->popup_parent.get()))
-        {
-            continue;
-        }
-
-        popup->close();
-    }
 }
 
 static wayfire_view pick_topmost_focusable(wayfire_view view)
@@ -299,6 +322,7 @@ void wf::output_impl_t::focus_node(wf::scene::node_ptr new_focus)
 
 void wf::output_impl_t::update_active_view(wayfire_view v)
 {
+    LOGC(KBD, "Output ", this->to_string(), ": active view becomes ", v);
     if ((v == nullptr) || (v->role == wf::VIEW_ROLE_TOPLEVEL))
     {
         if (last_active_toplevel != v)
@@ -325,7 +349,7 @@ void wf::output_impl_t::focus_view(wayfire_view v, uint32_t flags)
     static wf::option_wrapper_t<bool>
     all_dialogs_modal{"workarounds/all_dialogs_modal"};
 
-    const auto& make_view_visible = [this, flags] (wayfire_view view)
+    const auto& make_view_visible = [flags] (wayfire_view view)
     {
         if (view->minimized)
         {
@@ -339,7 +363,7 @@ void wf::output_impl_t::focus_view(wayfire_view v, uint32_t flags)
                 view = view->parent;
             }
 
-            workspace->bring_to_front(view);
+            view_bring_to_front(view);
         }
     };
 
@@ -359,13 +383,9 @@ void wf::output_impl_t::focus_view(wayfire_view v, uint32_t flags)
         }
     };
 
-    const auto& give_input_focus = [this, flags] (wayfire_view view)
+    const auto& give_input_focus = [this] (wayfire_view view)
     {
         focus_node(view ? view->get_surface_root_node() : nullptr);
-        if (flags & FOCUS_VIEW_CLOSE_POPUPS)
-        {
-            close_popups();
-        }
     };
 
     focus_view_signal data;
@@ -405,22 +425,13 @@ void wf::output_impl_t::focus_view(wayfire_view v, uint32_t flags)
 
 void wf::output_impl_t::focus_view(wayfire_view v, bool raise)
 {
-    uint32_t flags = FOCUS_VIEW_CLOSE_POPUPS;
+    uint32_t flags = 0;
     if (raise)
     {
         flags |= FOCUS_VIEW_RAISE;
     }
 
     focus_view(v, flags);
-}
-
-wayfire_view wf::output_t::get_top_view() const
-{
-    auto views = workspace->get_views_on_workspace(
-        workspace->get_current_workspace(),
-        LAYER_WORKSPACE);
-
-    return views.empty() ? nullptr : views[0];
 }
 
 wayfire_view wf::output_impl_t::get_active_view() const
@@ -638,19 +649,5 @@ void wf::output_impl_t::rem_binding(void *callback)
     remove_binding(button_map, (button_callback*)callback);
     remove_binding(axis_map, (axis_callback*)callback);
     remove_binding(activator_map, (activator_callback*)callback);
-}
-
-uint32_t all_layers_not_below(uint32_t layer)
-{
-    uint32_t mask = 0;
-    for (int i = 0; i < wf::TOTAL_LAYERS; i++)
-    {
-        if ((1u << i) >= layer)
-        {
-            mask |= (1 << i);
-        }
-    }
-
-    return mask;
 }
 } // namespace wf

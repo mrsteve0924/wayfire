@@ -18,7 +18,7 @@
 #include "wayfire/signal-definitions.hpp"
 #include "wayfire/signal-provider.hpp"
 #include "wayfire/workspace-stream.hpp"
-#include "workspace-stream-sharing.hpp"
+#include "wayfire/workspace-set.hpp"
 
 namespace wf
 {
@@ -47,8 +47,6 @@ class workspace_wall_t : public wf::signal::provider_t
     workspace_wall_t(wf::output_t *_output) : output(_output)
     {
         this->viewport = get_wall_rectangle();
-        resize_colors();
-        output->connect(&on_workspace_grid_changed);
     }
 
     ~workspace_wall_t()
@@ -173,7 +171,7 @@ class workspace_wall_t : public wf::signal::provider_t
     wf::geometry_t get_wall_rectangle() const
     {
         auto size = this->output->get_screen_size();
-        auto workspace_size = this->output->workspace->get_workspace_grid_size();
+        auto workspace_size = this->output->wset()->get_workspace_grid_size();
 
         return {
             -gap_size,
@@ -188,7 +186,7 @@ class workspace_wall_t : public wf::signal::provider_t
      */
     void set_ws_dim(const wf::point_t& ws, float value)
     {
-        render_colors[ws.x][ws.y] = value;
+        render_colors[{ws.x, ws.y}] = value;
         if (render_node)
         {
             scene::damage_node(render_node, render_node->get_bounding_box());
@@ -202,7 +200,18 @@ class workspace_wall_t : public wf::signal::provider_t
     int gap_size = 0;
     wf::geometry_t viewport = {0, 0, 0, 0};
 
-    std::vector<std::vector<float>> render_colors;
+    std::map<std::pair<int, int>, float> render_colors;
+
+    float get_color_for_workspace(wf::point_t ws)
+    {
+        auto it = render_colors.find({ws.x, ws.y});
+        if (it == render_colors.end())
+        {
+            return 1.0;
+        }
+
+        return it->second;
+    }
 
     /**
      * Get a list of workspaces visible in the viewport.
@@ -210,7 +219,7 @@ class workspace_wall_t : public wf::signal::provider_t
     std::vector<wf::point_t> get_visible_workspaces(wf::geometry_t viewport) const
     {
         std::vector<wf::point_t> visible;
-        auto wsize = output->workspace->get_workspace_grid_size();
+        auto wsize = output->wset()->get_workspace_grid_size();
         for (int i = 0; i < wsize.width; i++)
         {
             for (int j = 0; j < wsize.height; j++)
@@ -224,21 +233,6 @@ class workspace_wall_t : public wf::signal::provider_t
 
         return visible;
     }
-
-    void resize_colors()
-    {
-        auto size = this->output->workspace->get_workspace_grid_size();
-        render_colors.resize(size.width);
-        for (auto& v : render_colors)
-        {
-            v.resize(size.height, 1.0);
-        }
-    }
-
-    wf::signal::connection_t<workspace_grid_changed_signal> on_workspace_grid_changed = [=] (auto)
-    {
-        resize_colors();
-    };
 
   protected:
     class workspace_wall_node_t : public scene::node_t
@@ -357,7 +351,8 @@ class workspace_wall_t : public wf::signal::provider_t
                                 .instance = this,
                                 .target   = our_target,
                                 .damage   = our_damage,
-                                .data     = render_tag{TAG_WS_DIM, self->wall->render_colors[i][j]},
+                                .data     = render_tag{TAG_WS_DIM,
+                                    self->wall->get_color_for_workspace({i, j})},
                             });
 
                         // Render the workspace contents first
@@ -436,7 +431,7 @@ class workspace_wall_t : public wf::signal::provider_t
         workspace_wall_node_t(workspace_wall_t *wall) : node_t(false)
         {
             this->wall  = wall;
-            auto [w, h] = wall->output->workspace->get_workspace_grid_size();
+            auto [w, h] = wall->output->wset()->get_workspace_grid_size();
             workspaces.resize(w);
             for (int i = 0; i < w; i++)
             {

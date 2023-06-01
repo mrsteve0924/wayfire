@@ -3,13 +3,14 @@
  */
 #include <map>
 #include <memory>
+#include <wayfire/workarea.hpp>
 #include <wayfire/seat.hpp>
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/util/duration.hpp>
 #include <wayfire/view-transform.hpp>
 #include <wayfire/render-manager.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/plugins/vswitch.hpp>
 #include <wayfire/touch/touch.hpp>
@@ -27,6 +28,7 @@
 #include "wayfire/core.hpp"
 #include "wayfire/debug.hpp"
 #include "wayfire/plugin.hpp"
+#include "wayfire/plugins/common/util.hpp"
 #include "wayfire/scene-input.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-provider.hpp"
@@ -172,7 +174,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
                 return false;
             }
 
-            auto ws = output->workspace->get_current_workspace() + delta;
+            auto ws = output->wset()->get_current_workspace() + delta;
 
             // vswitch picks the top view, we want the focused one
             std::vector<wayfire_view> fixed_views;
@@ -181,7 +183,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
                 fixed_views.push_back(current_focus_view);
             }
 
-            output->workspace->request_workspace(ws, fixed_views);
+            output->wset()->request_workspace(ws, fixed_views);
 
             return true;
         });
@@ -419,7 +421,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         }
 
         auto ws = get_view_main_workspace(view);
-        output->workspace->request_workspace(ws);
+        output->wset()->request_workspace(ws);
     }
 
     /* Updates current and initial view focus variables accordingly */
@@ -531,6 +533,9 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             opts.enable_snap_off    = true;
             opts.snap_off_threshold = 200;
 
+            // We want to receive raw inputs (e.g. no fake pointer releases) in case the view is moved to
+            // another output.
+            grab->set_wants_raw_input(true);
             drag_helper->start_drag(last_selected_view, to, opts);
         } else if (drag_helper->view)
         {
@@ -554,7 +559,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             view = view->parent;
         }
 
-        auto ws     = output->workspace->get_current_workspace();
+        auto ws     = output->wset()->get_current_workspace();
         auto og     = output->get_layout_geometry();
         auto vg     = view->get_wm_geometry();
         auto center = wf::point_t{vg.x + vg.width / 2, vg.y + vg.height / 2};
@@ -642,7 +647,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
 
           case KEY_ESC:
             deactivate();
-            output->workspace->request_workspace(initial_workspace);
+            output->wset()->request_workspace(initial_workspace);
             output->focus_view(initial_focus_view, true);
             initial_focus_view = nullptr;
 
@@ -731,35 +736,15 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     /* Returns a list of views for all workspaces */
     std::vector<wayfire_view> get_all_workspace_views()
     {
-        std::vector<wayfire_view> views;
-
-        for (auto& view :
-             output->workspace->get_views_in_layer(wf::LAYER_WORKSPACE))
-        {
-            if ((view->role != wf::VIEW_ROLE_TOPLEVEL) || !view->is_mapped())
-            {
-                continue;
-            }
-
-            views.push_back(view);
-        }
-
-        return views;
+        return output->wset()->get_views(wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_MAPPED_ONLY);
     }
 
     /* Returns a list of views for the current workspace */
     std::vector<wayfire_view> get_current_workspace_views()
     {
         std::vector<wayfire_view> views;
-
-        for (auto& view :
-             output->workspace->get_views_in_layer(wf::LAYER_WORKSPACE))
+        for (auto& view : get_all_workspace_views())
         {
-            if ((view->role != wf::VIEW_ROLE_TOPLEVEL) || !view->is_mapped())
-            {
-                continue;
-            }
-
             auto vg = view->get_wm_geometry();
             auto og = output->get_relative_geometry();
             wf::region_t wr{og};
@@ -902,6 +887,11 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
 
         if (!current_focus_view)
         {
+            std::sort(views.begin(), views.end(), [=] (wayfire_view a, wayfire_view b)
+            {
+                return wf::get_focus_timestamp(a) > wf::get_focus_timestamp(b);
+            });
+
             current_focus_view = views.empty() ? nullptr : views.front();
             output->focus_view(current_focus_view, true);
         }
@@ -924,7 +914,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
 
         filter_views(views);
 
-        auto workarea = output->workspace->get_workarea();
+        auto workarea = output->workarea->get_workarea();
 
         auto sorted_rows = view_sort(views);
         size_t cnt_rows  = sorted_rows.size();
@@ -1263,6 +1253,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     {
         if ((ev->focus_output == output) && can_handle_drag())
         {
+            grab->set_wants_raw_input(true);
             drag_helper->set_scale(1.0);
         }
     };
@@ -1286,6 +1277,8 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
 
             wf::move_drag::adjust_view_on_output(ev);
         }
+
+        grab->set_wants_raw_input(false);
     };
 
     wf::signal::connection_t<wf::move_drag::snap_off_signal> on_drag_snap_off = [=] (auto)
@@ -1313,7 +1306,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             return false;
         }
 
-        initial_workspace  = output->workspace->get_current_workspace();
+        initial_workspace  = output->wset()->get_current_workspace();
         initial_focus_view = output->get_active_view();
         current_focus_view = initial_focus_view ?: views.front();
         // Make sure no leftover events from the activation binding

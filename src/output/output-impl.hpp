@@ -1,3 +1,4 @@
+#include "output/promotion-manager.hpp"
 #include "wayfire/bindings.hpp"
 #include "wayfire/output.hpp"
 #include "wayfire/plugin.hpp"
@@ -10,15 +11,17 @@
 #include <memory>
 #include <unordered_set>
 #include <wayfire/nonstd/safe-list.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 
 namespace wf
 {
 class output_impl_t : public output_t
 {
   private:
-    std::shared_ptr<scene::output_node_t> nodes[TOTAL_LAYERS];
-    scene::floating_inner_ptr wset;
+    std::shared_ptr<scene::output_node_t> nodes[(size_t)wf::scene::layer::ALL_LAYERS];
+
+    std::shared_ptr<workspace_set_t> current_wset;
+    std::unique_ptr<promotion_manager_t> promotion_manager;
     uint64_t last_timestamp = 0;
 
     std::map<key_callback*, key_callback> key_map;
@@ -30,27 +33,22 @@ class output_impl_t : public output_t
     std::unordered_multiset<wf::plugin_activation_data_t*> active_plugins;
 
     wf::signal::connection_t<view_disappeared_signal> on_view_disappeared;
+    wf::signal::connection_t<output_configuration_changed_signal> on_configuration_changed;
     void handle_view_removed(wayfire_view view);
+    void update_node_limits();
 
     bool inhibited = false;
 
     enum focus_view_flags_t
     {
         /* Raise the view which is being focused */
-        FOCUS_VIEW_RAISE        = (1 << 0),
-        /* Close popups of non-focused views */
-        FOCUS_VIEW_CLOSE_POPUPS = (1 << 1),
+        FOCUS_VIEW_RAISE = (1 << 0),
     };
 
     /**
      * Set the given view as the active view.
      */
     void update_active_view(wayfire_view view);
-
-    /**
-     * Close all popups on the output which do not belong to the active view.
-     */
-    void close_popups();
 
     /** @param flags bitmask of @focus_view_flags_t */
     void focus_view(wayfire_view view, uint32_t flags);
@@ -69,9 +67,10 @@ class output_impl_t : public output_t
     /**
      * Implementations of the public APIs
      */
+    std::shared_ptr<workspace_set_t> wset() override;
+    void set_workspace_set(std::shared_ptr<workspace_set_t> wset) override;
     std::shared_ptr<wf::scene::output_node_t> node_for_layer(
         wf::scene::layer layer) const override;
-    scene::floating_inner_ptr get_wset() const override;
     bool can_activate_plugin(wf::plugin_activation_data_t *owner, uint32_t flags = 0) override;
     bool can_activate_plugin(uint32_t caps, uint32_t flags = 0) override;
     bool activate_plugin(wf::plugin_activation_data_t *owner, uint32_t flags = 0) override;

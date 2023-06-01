@@ -4,6 +4,7 @@
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/scene-render.hpp"
 #include "wayfire/scene.hpp"
+#include "wayfire/view-helpers.hpp"
 #include <memory>
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/opengl.hpp>
@@ -18,7 +19,7 @@
 #include <wayfire/signal-definitions.hpp>
 
 #include <wayfire/render-manager.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 
 #include <wayfire/util/duration.hpp>
 #include <wayfire/nonstd/reverse.hpp>
@@ -297,7 +298,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
         if (!active)
         {
             active = true;
-            input_grab->grab_input(wf::scene::layer::OVERLAY, true);
+            input_grab->grab_input(wf::scene::layer::OVERLAY);
 
             focus_next(dir);
             arrange();
@@ -343,8 +344,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
         wf::scene::remove_child(render_node);
         render_node = nullptr;
 
-        for (auto& view :
-             output->workspace->get_views_in_layer(wf::ALL_LAYERS, true))
+        for (auto& view : output->wset()->get_views())
         {
             if (view->has_data("switcher-minimized-showed"))
             {
@@ -495,20 +495,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
     // returns a list of mapped views
     std::vector<wayfire_view> get_workspace_views() const
     {
-        auto all_views = output->workspace->get_views_on_workspace(
-            output->workspace->get_current_workspace(),
-            wf::WM_LAYERS, true);
-
-        std::vector<wayfire_view> mapped_views;
-        for (auto view : all_views)
-        {
-            if (view->is_mapped())
-            {
-                mapped_views.push_back(view);
-            }
-        }
-
-        return mapped_views;
+        return output->wset()->get_views(wf::WSET_MAPPED_ONLY | wf::WSET_CURRENT_WORKSPACE);
     }
 
     /* Change the current focus to the next or the previous view */
@@ -521,8 +508,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
         // calculate focus index & focus it
         int focused_view_index = (size + dir) % size;
         auto focused_view = ws_views[focused_view_index];
-
-        output->workspace->bring_to_front(focused_view);
+        wf::view_bring_to_front(focused_view);
     }
 
     /* Create the initial arrangement on the screen
@@ -609,14 +595,14 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
 
     std::vector<wayfire_view> get_background_views() const
     {
-        return output->workspace->get_views_on_workspace(
-            output->workspace->get_current_workspace(), wf::BELOW_LAYERS);
+        return wf::collect_views_from_output(output,
+            {wf::scene::layer::BACKGROUND, wf::scene::layer::BOTTOM});
     }
 
     std::vector<wayfire_view> get_overlay_views() const
     {
-        return output->workspace->get_views_on_workspace(
-            output->workspace->get_current_workspace(), wf::ABOVE_LAYERS);
+        return wf::collect_views_from_output(output,
+            {wf::scene::layer::TOP, wf::scene::layer::OVERLAY, wf::scene::layer::DWIDGET});
     }
 
     void dim_background(float dim)
@@ -827,7 +813,7 @@ class WayfireSwitcher : public wf::per_output_plugin_instance_t, public wf::keyb
         }
 
         rebuild_view_list();
-        output->workspace->bring_to_front(views.front().view);
+        wf::view_bring_to_front(views.front().view);
         duration.start();
     }
 

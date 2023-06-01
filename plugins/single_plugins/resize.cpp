@@ -5,7 +5,7 @@
 #include <wayfire/output.hpp>
 #include <wayfire/view.hpp>
 #include <wayfire/core.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workspace-set.hpp>
 #include <linux/input.h>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/plugins/wobbly/wobbly-signal.hpp>
@@ -185,14 +185,7 @@ class wayfire_resize : public wf::per_output_plugin_instance_t, public wf::point
         this->edges = forced_edges ?: calculate_edges(view->get_bounding_box(),
             get_input_coords().x, get_input_coords().y);
 
-        if (edges == 0)
-        {
-            return false;
-        }
-
-        auto current_ws_impl =
-            output->workspace->get_workspace_implementation();
-        if (!current_ws_impl->view_resizable(view))
+        if ((edges == 0) || !(view->get_allowed_actions() & wf::VIEW_ALLOW_RESIZE))
         {
             return false;
         }
@@ -202,7 +195,9 @@ class wayfire_resize : public wf::per_output_plugin_instance_t, public wf::point
             return false;
         }
 
-        input_grab->grab_input(wf::scene::layer::OVERLAY, true);
+        input_grab->set_wants_raw_input(true);
+        input_grab->grab_input(wf::scene::layer::OVERLAY);
+
         grab_start = get_input_coords();
         grabbed_geometry = view->get_wm_geometry();
 
@@ -263,7 +258,7 @@ class wayfire_resize : public wf::per_output_plugin_instance_t, public wf::point
 
             wf::view_change_workspace_signal workspace_may_changed;
             workspace_may_changed.view = this->view;
-            workspace_may_changed.to   = output->workspace->get_current_workspace();
+            workspace_may_changed.to   = output->wset()->get_current_workspace();
             workspace_may_changed.old_workspace_valid = false;
             output->emit(&workspace_may_changed);
         }

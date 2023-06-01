@@ -1,7 +1,8 @@
 #include "wayfire/output.hpp"
 #include "wayfire/core.hpp"
 #include "wayfire/output-layout.hpp"
-#include "wayfire/workspace-manager.hpp"
+#include "wayfire/view-helpers.hpp"
+#include "wayfire/workspace-set.hpp"
 #include "wayfire/render-manager.hpp"
 #include "wayfire/signal-definitions.hpp"
 #include "wayfire/util.hpp"
@@ -139,79 +140,50 @@ void transfer_views(wf::output_t *from, wf::output_t *to)
 {
     assert(from);
 
-    LOGI("transfer views from ", from->handle->name, " -> ",
-        to ? to->handle->name : "null");
-    /* first move each desktop view(e.g windows) to another output */
-    std::vector<wayfire_view> views;
-    std::vector<wayfire_view> unmapped_views;
+    LOGI("transfer views from ", from->handle->name, " -> ", to ? to->handle->name : "null");
+
+    // Step 1: move views from the current workspace set to the other output
     if (to)
     {
         /* If we aren't moving to another output, then there is no need to
          * enumerate views either */
-        views = from->workspace->get_views_in_layer(wf::WM_LAYERS);
-
-        // Also get a list of views which are on that output, but do not have
-        // a layer. These are usually unmapped Xwayland views, which are not to
-        // be killed, as they are needed for the "real" views.
-        for (auto& view : wf::get_core().get_all_views())
-        {
-            if ((view->get_output() == from) &&
-                (from->workspace->get_view_layer(view) == 0) &&
-                (view->role != VIEW_ROLE_DESKTOP_ENVIRONMENT))
-            {
-                unmapped_views.push_back(view);
-            }
-        }
-
-        std::reverse(views.begin(), views.end());
-    }
-
-    for (auto& view : views)
-    {
-        from->workspace->remove_view(view);
-    }
-
-    /* views would be empty if !to, but clang-analyzer detects null deref */
-    if (to)
-    {
-        for (auto& view : unmapped_views)
-        {
-            // Most operations for transferring an unmapped view to another
-            // output don't make any sense, so we handle them separately.
-            view->set_output(to);
-        }
-
+        auto views = from->wset()->get_views(WSET_SORT_STACKING);
         for (auto& view : views)
         {
-            wf::get_core().move_view_to_output(view, to, true);
+            move_view_to_output(view, to, true);
         }
     }
 
-    // Find all leftover views
-    std::vector<wayfire_view> reffed;
+    // Step 2: Ensure none of the remaining views have an invalid output.
+    // Note that all views in workspace sets will have their output reassigned automatically by the
+    // workspace-set impl.
+    std::vector<wayfire_view> non_ws_views;
     for (auto& view : wf::get_core().get_all_views())
     {
-        if (view->get_output() != from)
+        if ((view->get_output() == from) && !view->get_wset())
         {
-            continue;
+            non_ws_views.push_back(view);
+            // Take a ref, so that the view doesn't get destroyed while we're doing operations on the views
+            view->take_ref();
         }
-
-        // Ensure that no view is destroyed before we're finished with it!
-        // This is necessary in case we have for ex. a popup on a layer-shell
-        // surface. We don't know in which order they will be closed/destroyed.
-        reffed.push_back(view);
-        view->take_ref();
     }
 
-    // Close the leftover views, typically layer-shell ones
-    for (auto& view : reffed)
+    for (auto& view : non_ws_views)
     {
-        view->close();
-        view->set_output(nullptr);
+        if (view->role == VIEW_ROLE_DESKTOP_ENVIRONMENT)
+        {
+            // typically: layer-shell views that should be closed, since they are tied to a single output
+            view->close();
+            view->set_output(nullptr);
+        } else
+        {
+            // typically: xwayland OR views
+            view->set_output(to);
+        }
     }
 
     // Drop refs we have taken
-    for (auto& view : reffed)
+    for (auto& view : non_ws_views)
     {
         view->unref();
     }
@@ -890,7 +862,7 @@ class output_layout_t::impl
     wl_listener_wrapper on_backend_destroy;
 
     wl_idle_call idle_update_configuration;
-    wl_timer timer_remove_noop;
+    wl_timer<false> timer_remove_noop;
 
     wlr_backend *noop_backend;
     /* Wayfire generally assumes that an enabled output is always available.
@@ -1456,7 +1428,6 @@ class output_layout_t::impl
             timer_remove_noop.set_timeout(1000, [=] ()
             {
                 remove_noop_output();
-                return false; // disconnect
             });
         }
 

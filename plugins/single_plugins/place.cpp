@@ -2,7 +2,7 @@
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/view.hpp>
 #include <wayfire/core.hpp>
-#include <wayfire/workspace-manager.hpp>
+#include <wayfire/workarea.hpp>
 #include <wayfire/signal-definitions.hpp>
 
 class wayfire_place_window : public wf::per_output_plugin_instance_t
@@ -16,7 +16,7 @@ class wayfire_place_window : public wf::per_output_plugin_instance_t
         }
 
         ev->is_positioned = true;
-        auto workarea = output->workspace->get_workarea();
+        auto workarea = output->workarea->get_workarea();
 
         std::string mode = placement_mode;
         if (mode == "cascade")
@@ -36,7 +36,7 @@ class wayfire_place_window : public wf::per_output_plugin_instance_t
 
     wf::signal::connection_t<wf::workarea_changed_signal> workarea_changed_cb = [=] (auto)
     {
-        auto workarea = output->workspace->get_workarea();
+        auto workarea = output->workarea->get_workarea();
         if ((cascade_x < workarea.x) ||
             (cascade_x > workarea.x + workarea.width))
         {
@@ -57,7 +57,7 @@ class wayfire_place_window : public wf::per_output_plugin_instance_t
   public:
     void init() override
     {
-        auto workarea = output->workspace->get_workarea();
+        auto workarea = output->workarea->get_workarea();
         cascade_x = workarea.x;
         cascade_y = workarea.y;
 

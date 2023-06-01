@@ -25,12 +25,15 @@
 #include <memory>
 #include <wayfire/core.hpp>
 #include <wayfire/view.hpp>
-#include <wayfire/per-output-plugin.hpp>
+#include <wayfire/plugin.hpp>
 #include <wayfire/output.hpp>
+#include <wayfire/output-layout.hpp>
+#include <wayfire/bindings-repository.hpp>
+#include "wayfire/view-helpers.hpp"
 #include "wayfire/view-transform.hpp"
-#include "wayfire/workspace-manager.hpp"
+#include "wayfire/workspace-set.hpp"
 
-class wayfire_alpha : public wf::per_output_plugin_instance_t
+class wayfire_alpha : public wf::plugin_interface_t
 {
     wf::option_wrapper_t<wf::keybinding_t> modifier{"alpha/modifier"};
     wf::option_wrapper_t<double> min_value{"alpha/min_value"};
@@ -43,7 +46,7 @@ class wayfire_alpha : public wf::per_output_plugin_instance_t
     void init() override
     {
         min_value.set_callback(min_value_changed);
-        output->add_axis(modifier, &axis_cb);
+        wf::get_core().bindings->add_axis(modifier, &axis_cb);
     }
 
     void update_alpha(wayfire_view view, float delta)
@@ -55,12 +58,9 @@ class wayfire_alpha : public wf::per_output_plugin_instance_t
             tmgr->add_transformer(node, wf::TRANSFORMER_2D, "alpha");
         }
 
-        auto transformer =
-            tmgr->get_transformer<wf::scene::view_2d_transformer_t>("alpha");
-
-        auto old_value = transformer->alpha;
-        transformer->alpha = std::clamp(
-            transformer->alpha - delta * 0.003, (double)min_value, 1.0);
+        auto transformer = tmgr->get_transformer<wf::scene::view_2d_transformer_t>("alpha");
+        auto old_value   = transformer->alpha;
+        transformer->alpha = std::clamp(transformer->alpha - delta * 0.003, (double)min_value, 1.0);
 
         if (transformer->alpha == 1.0)
         {
@@ -73,12 +73,12 @@ class wayfire_alpha : public wf::per_output_plugin_instance_t
 
     wf::axis_callback axis_cb = [=] (wlr_pointer_axis_event *ev)
     {
-        if (!output->activate_plugin(&grab_interface))
+        auto gc = wf::get_core().get_cursor_position();
+        auto current_output = wf::get_core().output_layout->get_output_coords_at(gc, gc);
+        if (!current_output || !current_output->can_activate_plugin(&grab_interface))
         {
             return false;
         }
-
-        output->deactivate_plugin(&grab_interface);
 
         auto view = wf::get_core().get_cursor_focus_view();
         if (!view)
@@ -86,9 +86,8 @@ class wayfire_alpha : public wf::per_output_plugin_instance_t
             return false;
         }
 
-        auto layer = output->workspace->get_view_layer(view);
-
-        if (layer == wf::LAYER_BACKGROUND)
+        auto layer = wf::get_view_layer(view).value_or(wf::scene::layer::BACKGROUND);
+        if (layer == wf::scene::layer::BACKGROUND)
         {
             return false;
         }
@@ -105,11 +104,10 @@ class wayfire_alpha : public wf::per_output_plugin_instance_t
 
     wf::config::option_base_t::updated_callback_t min_value_changed = [=] ()
     {
-        for (auto& view : output->workspace->get_views_in_layer(wf::ALL_LAYERS))
+        for (auto& view : wf::get_core().get_all_views())
         {
             auto tmgr = view->get_transformed_node();
-            auto transformer =
-                tmgr->get_transformer<wf::scene::view_2d_transformer_t>("alpha");
+            auto transformer = tmgr->get_transformer<wf::scene::view_2d_transformer_t>("alpha");
             if (transformer && (transformer->alpha < min_value))
             {
                 transformer->alpha = min_value;
@@ -122,14 +120,11 @@ class wayfire_alpha : public wf::per_output_plugin_instance_t
     {
         for (auto& view : wf::get_core().get_all_views())
         {
-            if (!view->get_output() || (view->get_output() == output))
-            {
-                view->get_transformed_node()->rem_transformer("alpha");
-            }
+            view->get_transformed_node()->rem_transformer("alpha");
         }
 
-        output->rem_binding(&axis_cb);
+        wf::get_core().bindings->rem_binding(&axis_cb);
     }
 };
 
-DECLARE_WAYFIRE_PLUGIN(wf::per_output_plugin_t<wayfire_alpha>);
+DECLARE_WAYFIRE_PLUGIN(wayfire_alpha);

@@ -20,6 +20,7 @@
 namespace wf
 {
 class view_interface_t;
+class workspace_set_t;
 class decorator_frame_t_t;
 }
 
@@ -35,7 +36,9 @@ class view_node_t;
 
 // A signal emitted when the view is destroyed and its memory will be freed.
 struct view_destruct_signal
-{};
+{
+    wayfire_view view;
+};
 
 /* abstraction for desktop-apis, no real need for plugins
  * This is a base class to all "drawables" - desktop views, subsurfaces, popups */
@@ -50,6 +53,23 @@ enum view_role_t
      * background views, etc.
      */
     VIEW_ROLE_DESKTOP_ENVIRONMENT,
+};
+
+/**
+ * A list of standard actions which may be allowed on a view.
+ */
+enum view_allowed_actions_t
+{
+    // None of the actions below are allowed.
+    VIEW_ALLOW_NONE      = 0,
+    // It is allowed to move the view anywhere on the screen.
+    VIEW_ALLOW_MOVE      = (1 << 0),
+    // It is allowed to resize the view arbitrarily.
+    VIEW_ALLOW_RESIZE    = (1 << 1),
+    // It is allowed to move the view to another workspace.
+    VIEW_ALLOW_WS_CHANGE = (1 << 2),
+    // All of the actions above are allowed.
+    VIEW_ALLOW_ALL       = VIEW_ALLOW_MOVE | VIEW_ALLOW_RESIZE | VIEW_ALLOW_WS_CHANGE,
 };
 
 /**
@@ -139,6 +159,11 @@ class view_interface_t : public wf::signal::provider_t, public wf::object_base_t
      */
     virtual wf::output_t *get_output();
 
+    /**
+     * Get the workspace set the view is attached to, if any.
+     */
+    std::shared_ptr<workspace_set_t> get_wset();
+
     /** Move the view to the given output-local coordinates.  */
     virtual void move(int x, int y) = 0;
 
@@ -180,6 +205,21 @@ class view_interface_t : public wf::signal::provider_t, public wf::object_base_t
 
     /** Request that the view closes. */
     virtual void close();
+
+    /**
+     * Get the allowed actions for this view. By default, all actions are allowed, but plugins may disable
+     * individual actions.
+     *
+     * The allowed actions are a bitmask of @view_allowed_actions_t.
+     */
+    uint32_t get_allowed_actions() const;
+
+    /**
+     * Set the allowed actions for the view.
+     *
+     * @param actions The allowed actions, a bitmask of @view_allowed_actions_t.
+     */
+    void set_allowed_actions(uint32_t actions) const;
 
     /**
      * Ping the view's client.
@@ -385,7 +425,7 @@ class view_interface_t : public wf::signal::provider_t, public wf::object_base_t
 
   protected:
     view_interface_t();
-    view_interface_t(scene::floating_inner_ptr surface_root_node);
+    void set_surface_root_node(scene::floating_inner_ptr surface_root_node);
 
     friend class compositor_core_impl_t;
     /**

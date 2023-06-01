@@ -3,6 +3,7 @@
 #include "config.h"
 #include "wayfire/geometry.hpp"
 #include "xwayland-view-base.hpp"
+#include <wayfire/workarea.hpp>
 
 #if WF_HAS_XWAYLAND
 
@@ -305,7 +306,7 @@ class wayfire_xwayland_view : public wayfire_xwayland_view_base
 
                 /* Make sure geometry is properly visible on the view output */
                 save_geometry = wf::clamp(save_geometry,
-                    get_output()->workspace->get_workarea());
+                    get_output()->workarea->get_workarea());
                 priv->update_windowed_geometry(self(), save_geometry);
             }
 
