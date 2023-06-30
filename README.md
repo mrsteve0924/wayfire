@@ -91,7 +91,7 @@ sudo ninja -C build install
 **Note**: `wf-config` and `wlroots` can be built as submodules, by specifying
 `-Duse_system_wfconfig=disabled` and `-Duse_system_wlroots=disabled` options to `meson`.
 This is the default if they are not present on your system.
-    when installing wf-config use meson build --prefix /usr
+When installing wf-config use meson build --prefix /usr 
 
 Installing [wf-shell](https://github.com/WayfireWM/wf-shell) is recommended for a complete experience.
 
