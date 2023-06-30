@@ -83,7 +83,7 @@ The easiest way to install Wayfire, wf-shell and WCM to get a functional desktop
 Alternatively, you can build from source:
 
 ``` sh
-meson build
+meson build --prefix=/usr
 ninja -C build
 sudo ninja -C build install
 ```
