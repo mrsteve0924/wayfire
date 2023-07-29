@@ -7,10 +7,13 @@
 #include <type_traits>
 #include <map>
 #include <wayfire/core.hpp>
+#include "animate.hpp"
 #include "system_fade.hpp"
 #include "basic_animations.hpp"
 #include "fire/fire.hpp"
+#include "unmapped-view-node.hpp"
 #include "wayfire/plugin.hpp"
+#include "wayfire/scene-operations.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-provider.hpp"
 #include <wayfire/matcher.hpp>
@@ -69,13 +72,23 @@ struct animation_hook : public animation_hook_base
     std::string name;
     wf::output_t *current_output = nullptr;
     std::unique_ptr<animation_base> animation;
+    std::shared_ptr<wf::unmapped_view_snapshot_node> unmapped_contents;
+
+    void damage_whole_view()
+    {
+        view->damage();
+        if (unmapped_contents)
+        {
+            wf::scene::damage_node(unmapped_contents, unmapped_contents->get_bounding_box());
+        }
+    }
 
     /* Update animation right before each frame */
     wf::effect_hook_t update_animation_hook = [=] ()
     {
-        view->damage();
+        damage_whole_view();
         bool result = animation->step();
-        view->damage();
+        damage_whole_view();
 
         if (!result)
         {
@@ -122,21 +135,62 @@ struct animation_hook : public animation_hook_base
         /* Animation is driven by the output render cycle the view is on.
          * Thus, we need to keep in sync with the current output. */
         view->connect(&on_set_output);
+
+        // Take a ref on the view, so that it remains available for as long as the animation runs.
+        wf::scene::set_node_enabled(view->get_root_node(), true);
+        view->take_ref();
+
+        if (type == ANIMATION_TYPE_UNMAP)
+        {
+            set_unmapped_contents();
+        }
     }
 
     void stop_hook(bool detached) override
     {
-        /* We don't want to change the state of the view if it was detached */
-        if ((type == ANIMATION_TYPE_MINIMIZE) && !detached)
-        {
-            view->set_minimized(true);
-        }
-
         view->erase_data(name);
+    }
+
+    // When showing the final unmap animation, we show a ``fake'' node instead of the actual view contents,
+    // because the underlying (sub)surfaces might be destroyed.
+    //
+    // The unmapped contents have to be visible iff the view is in an unmap animation.
+    void set_unmapped_contents()
+    {
+        if (!unmapped_contents)
+        {
+            unmapped_contents = std::make_shared<wf::unmapped_view_snapshot_node>(view);
+            auto parent = dynamic_cast<wf::scene::floating_inner_node_t*>(
+                view->get_surface_root_node()->parent());
+
+            if (parent)
+            {
+                wf::scene::add_front(
+                    std::dynamic_pointer_cast<wf::scene::floating_inner_node_t>(parent->shared_from_this()),
+                    unmapped_contents);
+            }
+        }
+    }
+
+    void unset_unmapped_contents()
+    {
+        if (unmapped_contents)
+        {
+            wf::scene::remove_child(unmapped_contents);
+            unmapped_contents.reset();
+        }
     }
 
     void reverse(wf_animation_type type) override
     {
+        if (type == ANIMATION_TYPE_UNMAP)
+        {
+            set_unmapped_contents();
+        } else
+        {
+            unset_unmapped_contents();
+        }
+
         this->type = type;
         if (animation)
         {
@@ -160,12 +214,9 @@ struct animation_hook : public animation_hook_base
         on_set_output.disconnect();
         this->animation.reset();
 
-        // remove from list
-        if (type == ANIMATION_TYPE_UNMAP)
-        {
-            wf::scene::set_node_enabled(view->get_root_node(), false);
-            view->unref();
-        }
+        unset_unmapped_contents();
+        wf::scene::set_node_enabled(view->get_root_node(), false);
+        view->unref();
     }
 
     animation_hook(const animation_hook &) = delete;
@@ -309,13 +360,6 @@ class wayfire_animation : public wf::plugin_interface_t, private wf::per_output_
     {
         name = "animation-hook-" + name;
 
-        if (type == ANIMATION_TYPE_UNMAP)
-        {
-            wf::scene::set_node_enabled(view->get_root_node(), true);
-            view->take_ref();
-            view->take_snapshot();
-        }
-
         if (type == ANIMATION_TYPE_MAP)
         {
             if (try_reverse(view, type, name, SHOWN))
@@ -399,12 +443,14 @@ class wayfire_animation : public wf::plugin_interface_t, private wf::per_output_
     {
         if (ev->state)
         {
-            ev->carried_out = true;
             set_animation<zoom_animation>(ev->view, ANIMATION_TYPE_MINIMIZE, default_duration, "minimize");
         } else
         {
             set_animation<zoom_animation>(ev->view, ANIMATION_TYPE_RESTORE, default_duration, "minimize");
         }
+
+        // ev->carried_out should remain false, so that core also does the automatic minimize/restore and
+        // refocus
     };
 
     wf::signal::connection_t<wf::output_start_rendering_signal> on_render_start =

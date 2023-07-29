@@ -4,11 +4,12 @@
 
 #include <wayfire/workarea.hpp>
 #include <wayfire/signal-definitions.hpp>
+#include "view/layer-shell/layer-shell-node.hpp"
 #include "wayfire/geometry.hpp"
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/util.hpp"
 #include "wayfire/view.hpp"
-#include "xdg-shell.hpp"
+#include "../xdg-shell.hpp"
 #include "wayfire/core.hpp"
 #include "wayfire/debug.hpp"
 #include <wayfire/util/log.hpp>
@@ -16,7 +17,7 @@
 #include "wayfire/output.hpp"
 #include "wayfire/workspace-set.hpp"
 #include "wayfire/output-layout.hpp"
-#include "view-impl.hpp"
+#include "../view-impl.hpp"
 
 static const uint32_t both_vert =
     ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP | ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
@@ -33,6 +34,7 @@ class wayfire_layer_shell_view : public wf::view_interface_t
 
     wf::wl_listener_wrapper on_surface_commit;
     std::shared_ptr<wf::scene::wlr_surface_node_t> main_surface;
+    std::shared_ptr<wf::layer_shell_node_t> surface_root_node;
     std::unique_ptr<wf::wlr_surface_controller_t> surface_controller;
 
     /**
@@ -92,22 +94,11 @@ class wayfire_layer_shell_view : public wf::view_interface_t
     }
 
     /* Functions which are further specialized for the different shells */
-    void move(int x, int y) override
+    void move(int x, int y)
     {
-        auto old_geometry = geometry;
+        surface_root_node->set_offset({x, y});
         this->geometry.x = x;
         this->geometry.y = y;
-        wf::emit_geometry_changed_signal(self(), old_geometry);
-    }
-
-    wf::geometry_t get_wm_geometry() override
-    {
-        return geometry;
-    }
-
-    wf::geometry_t get_output_geometry() override
-    {
-        return geometry;
     }
 
     wlr_surface *get_keyboard_focus_surface() override
@@ -118,11 +109,6 @@ class wayfire_layer_shell_view : public wf::view_interface_t
         }
 
         return NULL;
-    }
-
-    bool should_be_decorated() override
-    {
-        return false;
     }
 };
 
@@ -272,9 +258,10 @@ struct wf_layer_shell_manager
         {
             v->anchored_area =
                 std::make_unique<wf::output_workarea_manager_t::anchored_area>();
-            v->anchored_area->reflowed =
-                [v] (wf::geometry_t geometry, wf::geometry_t _)
-            { v->configure(geometry); };
+            v->anchored_area->reflowed = [this, v] (wf::geometry_t avail_workarea)
+            {
+                pin_view(v, avail_workarea);
+            };
             /* Notice that the reflowed areas won't be changed until we call
              * reflow_reserved_areas(). However, by that time the information
              * in anchored_area will have been populated */
@@ -283,9 +270,8 @@ struct wf_layer_shell_manager
 
         v->anchored_area->edge = anchor_to_edge(edges);
         v->anchored_area->reserved_size = v->lsurface->current.exclusive_zone;
-        v->anchored_area->real_size     = v->anchored_area->edge <=
-            wf::output_workarea_manager_t::ANCHORED_EDGE_BOTTOM ?
-            v->lsurface->current.desired_height : v->lsurface->current.desired_width;
+        LOGC(LSHELL, "Set exclusive zone for ", v->self(), " edges=", edges,
+            " excl=", v->anchored_area->reserved_size);
     }
 
     void pin_view(wayfire_layer_shell_view *v, wf::geometry_t usable_workarea)
@@ -298,7 +284,8 @@ struct wf_layer_shell_manager
         box.x     = box.y = 0;
         box.width = state->desired_width;
         box.height = state->desired_height;
-
+        LOGC(LSHELL, "Pin view ", v->self(), " desired=", wf::dimensions(box), " workarea=", bounds,
+            " anchor=", state->anchor);
         if ((state->anchor & both_horiz) && (box.width == 0))
         {
             box.x     = bounds.x;
@@ -345,6 +332,7 @@ struct wf_layer_shell_manager
                 set_exclusive_zone(v);
             } else
             {
+                LOGC(LSHELL, "Unset anchored area for ", v->self());
                 /* Make sure the view doesn't have a reserved area anymore */
                 v->remove_anchored(false);
             }
@@ -390,13 +378,13 @@ wayfire_layer_shell_view::wayfire_layer_shell_view(wlr_layer_surface_v1 *lsurf) 
 {
     on_surface_commit.set_callback([&] (void*) { commit(); });
     this->main_surface = std::make_shared<wf::scene::wlr_surface_node_t>(lsurf->surface, true);
+    this->surface_root_node = std::make_shared<wf::layer_shell_node_t>(self());
+    this->set_surface_root_node(surface_root_node);
 
-    LOGD("Create a layer surface: namespace ", lsurf->namespace_t,
-        " layer ", lsurf->current.layer);
+    LOGD("Create a layer surface: namespace ", lsurf->namespace_t, " layer ", lsurf->current.layer);
 
     role = wf::VIEW_ROLE_DESKTOP_ENVIRONMENT;
     std::memset(&this->prev_state, 0, sizeof(prev_state));
-    sticky = true;
 
     /* If we already have an output set, then assign it before core assigns us
      * an output */
@@ -502,9 +490,7 @@ void wayfire_layer_shell_view::map()
 {
     {
         this->app_id = nonull(lsurface->namespace_t);
-        wf::view_app_id_changed_signal data;
-        data.view = self();
-        emit(&data);
+        wf::emit_app_id_changed_signal(self());
     }
 
     // Disconnect, from now on regular commits will work
@@ -523,6 +509,8 @@ void wayfire_layer_shell_view::map()
     {
         get_output()->refocus();
     }
+
+    emit_view_map();
 }
 
 void wayfire_layer_shell_view::unmap()
@@ -543,11 +531,9 @@ void wayfire_layer_shell_view::commit()
     wf::dimensions_t new_size{lsurface->surface->current.width, lsurface->surface->current.height};
     if (new_size != wf::dimensions(geometry))
     {
-        auto old_geometry = geometry;
         this->geometry.width  = new_size.width;
         this->geometry.height = new_size.height;
-        wf::emit_geometry_changed_signal(self(), old_geometry);
-        view_damage_raw(self(), last_bounding_box);
+        wf::scene::damage_node(get_root_node(), last_bounding_box);
     }
 
     this->last_bounding_box = get_bounding_box();

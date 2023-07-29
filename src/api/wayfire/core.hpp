@@ -21,6 +21,8 @@
 namespace wf
 {
 class view_interface_t;
+class toplevel_view_interface_t;
+class window_manager_t;
 
 namespace scene
 {
@@ -40,6 +42,7 @@ struct gesture_state_t;
 }
 
 using wayfire_view = nonstd::observer_ptr<wf::view_interface_t>;
+using wayfire_toplevel_view = nonstd::observer_ptr<wf::toplevel_view_interface_t>;
 
 namespace wf
 {
@@ -106,6 +109,7 @@ class compositor_core_t : public wf::object_base_t, public signal::provider_t
     std::unique_ptr<wf::bindings_repository_t> bindings;
     std::unique_ptr<wf::seat_t> seat;
     std::unique_ptr<wf::txn::transaction_manager_t> tx_manager;
+    std::unique_ptr<wf::window_manager_t> default_wm;
 
     /**
      * Various protocols supported by wlroots
@@ -322,7 +326,7 @@ class compositor_core_t : public wf::object_base_t, public signal::provider_t
  * set, it will adjust the view geometry for the new output and clamp
  * it to the output geometry so it is at an expected size and position.
  */
-void move_view_to_output(wayfire_view v, wf::output_t *new_output, bool reconfigure);
+void move_view_to_output(wayfire_toplevel_view v, wf::output_t *new_output, bool reconfigure);
 
 /**
  * Simply a convenience function to call wf::compositor_core_t::get()

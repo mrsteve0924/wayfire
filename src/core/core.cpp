@@ -1,9 +1,10 @@
 /* Needed for pipe2 */
 #ifndef _GNU_SOURCE
     #define _GNU_SOURCE
-    #include "wayfire/scene.hpp"
+    #include "wayfire/core.hpp"
 #endif
 
+#include "wayfire/scene.hpp"
 #include <wayfire/workarea.hpp>
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/txn/transaction-manager.hpp"
@@ -43,6 +44,7 @@
 #include "../output/output-impl.hpp"
 #include "main.hpp"
 #include "seat/drag-icon.hpp"
+#include <wayfire/window-manager.hpp>
 
 #include "core-impl.hpp"
 
@@ -81,6 +83,7 @@ void wf::compositor_core_impl_t::init()
 {
     this->scene_root = std::make_shared<scene::root_node_t>();
     this->tx_manager = std::make_unique<txn::transaction_manager_t>();
+    this->default_wm = std::make_unique<wf::window_manager_t>();
 
     wlr_renderer_init_wl_display(renderer, display);
 
@@ -520,7 +523,7 @@ std::string wf::compositor_core_impl_t::get_xwayland_display()
     return xwayland_get_display();
 }
 
-void wf::move_view_to_output(wayfire_view v, wf::output_t *new_output, bool reconfigure)
+void wf::move_view_to_output(wayfire_toplevel_view v, wf::output_t *new_output, bool reconfigure)
 {
     auto old_output = v->get_output();
     auto old_wset   = v->get_wset();
@@ -534,9 +537,9 @@ void wf::move_view_to_output(wayfire_view v, wf::output_t *new_output, bool reco
 
     if (reconfigure)
     {
-        edges = v->tiled_edges;
-        fullscreen = v->fullscreen;
-        view_g     = v->get_wm_geometry();
+        edges = v->pending_tiled_edges();
+        fullscreen = v->pending_fullscreen();
+        view_g     = v->get_pending_geometry();
         old_output_g = old_output->get_relative_geometry();
         new_output_g = new_output->get_relative_geometry();
         auto ratio_x = (double)new_output_g.width / old_output_g.width;
@@ -563,10 +566,10 @@ void wf::move_view_to_output(wayfire_view v, wf::output_t *new_output, bool reco
     {
         if (fullscreen)
         {
-            v->fullscreen_request(new_output, true);
+            wf::get_core().default_wm->fullscreen_request(v, new_output, true);
         } else if (edges)
         {
-            v->tile_request(edges);
+            wf::get_core().default_wm->tile_request(v, edges);
         } else
         {
             auto new_g = wf::clamp(view_g, new_output->workarea->get_workarea());

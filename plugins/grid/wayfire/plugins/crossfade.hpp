@@ -1,6 +1,7 @@
 #pragma once
 
 #include <wayfire/plugins/common/util.hpp>
+#include "wayfire/core.hpp"
 #include "wayfire/geometry.hpp"
 #include "wayfire/opengl.hpp"
 #include "wayfire/region.hpp"
@@ -10,11 +11,15 @@
 #include "wayfire/signal-provider.hpp"
 #include <memory>
 #include <wayfire/view-transform.hpp>
+#include <wayfire/toplevel-view.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/nonstd/wlroots.hpp>
 #include <wayfire/plugins/common/geometry-animation.hpp>
 #include <wayfire/render-manager.hpp>
 #include <wayfire/plugins/wobbly/wobbly-signal.hpp>
+#include <wayfire/toplevel.hpp>
+#include <wayfire/txn/transaction-manager.hpp>
+#include <wayfire/window-manager.hpp>
 
 namespace wf
 {
@@ -37,15 +42,15 @@ class crossfade_node_t : public scene::view_2d_transformer_t
     wf::geometry_t displayed_geometry;
     double overlay_alpha;
 
-    crossfade_node_t(wayfire_view view) : view_2d_transformer_t(view)
+    crossfade_node_t(wayfire_toplevel_view view) : view_2d_transformer_t(view)
     {
-        displayed_geometry = view->get_wm_geometry();
+        displayed_geometry = view->get_geometry();
         this->view = view;
 
         auto root_node = view->get_surface_root_node();
         const wf::geometry_t bbox = root_node->get_bounding_box();
 
-        original_buffer.geometry = view->get_wm_geometry();
+        original_buffer.geometry = view->get_geometry();
         original_buffer.scale    = view->get_output()->handle->scale;
 
         OpenGL::render_begin();
@@ -173,7 +178,7 @@ class grid_animation_t : public wf::custom_data_t
      * @param type Indicates which animation method to use.
      * @param duration Indicates the duration of the animation (only for crossfade)
      */
-    grid_animation_t(wayfire_view view, type_t type,
+    grid_animation_t(wayfire_toplevel_view view, type_t type,
         wf::option_sptr_t<int> duration)
     {
         this->view   = view;
@@ -194,18 +199,20 @@ class grid_animation_t : public wf::custom_data_t
      *   animation. If target_edges are -1, then the tiled edges of the view will
      *   not be changed.
      */
-    void adjust_target_geometry(wf::geometry_t geometry, int32_t target_edges)
+    void adjust_target_geometry(wf::geometry_t geometry, int32_t target_edges, wf::txn::transaction_uptr& tx)
     {
         // Apply the desired attributes to the view
-        const auto& set_state = [=] ()
+        const auto& set_state = [&] ()
         {
             if (target_edges >= 0)
             {
-                view->set_fullscreen(false);
-                view->set_tiled(target_edges);
+                wf::get_core().default_wm->update_last_windowed_geometry(view);
+                view->toplevel()->pending().fullscreen  = false;
+                view->toplevel()->pending().tiled_edges = target_edges;
             }
 
-            view->set_geometry(geometry);
+            view->toplevel()->pending().geometry = geometry;
+            tx->add_object(view->toplevel());
         };
 
         if (type != CROSSFADE)
@@ -223,7 +230,7 @@ class grid_animation_t : public wf::custom_data_t
         }
 
         // Crossfade animation
-        original = view->get_wm_geometry();
+        original = view->get_geometry();
         animation.set_start(original);
         animation.set_end(geometry);
         animation.start();
@@ -234,6 +241,13 @@ class grid_animation_t : public wf::custom_data_t
 
         // Start the transition
         set_state();
+    }
+
+    void adjust_target_geometry(wf::geometry_t geometry, int32_t target_edges)
+    {
+        auto tx = wf::txn::transaction_t::create();
+        adjust_target_geometry(geometry, target_edges, tx);
+        wf::get_core().tx_manager->schedule_transaction(std::move(tx));
     }
 
     ~grid_animation_t()
@@ -255,9 +269,9 @@ class grid_animation_t : public wf::custom_data_t
             return destroy();
         }
 
-        if (view->get_wm_geometry() != original)
+        if (view->get_geometry() != original)
         {
-            original = view->get_wm_geometry();
+            original = view->get_geometry();
             animation.set_end(original);
         }
 
@@ -265,7 +279,7 @@ class grid_animation_t : public wf::custom_data_t
         view->damage();
         tr->displayed_geometry = animation;
 
-        auto geometry = view->get_wm_geometry();
+        auto geometry = view->get_geometry();
         tr->scale_x = animation.width / geometry.width;
         tr->scale_y = animation.height / geometry.height;
 
@@ -284,7 +298,7 @@ class grid_animation_t : public wf::custom_data_t
     }
 
     wf::geometry_t original;
-    wayfire_view view;
+    wayfire_toplevel_view view;
     wf::output_t *output;
     wf::signal::connection_t<view_disappeared_signal> on_disappear = [=] (view_disappeared_signal *ev)
     {

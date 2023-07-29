@@ -5,20 +5,22 @@
 #include <memory>
 #include <wayfire/plugin.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
+#include <wayfire/toplevel-view.hpp>
+#include <wayfire/window-manager.hpp>
 #include "gtk-shell.hpp"
 #include "config.h"
 
 class wayfire_foreign_toplevel;
-using foreign_toplevel_map_type = std::map<wayfire_view, std::unique_ptr<wayfire_foreign_toplevel>>;
+using foreign_toplevel_map_type = std::map<wayfire_toplevel_view, std::unique_ptr<wayfire_foreign_toplevel>>;
 
 class wayfire_foreign_toplevel
 {
-    wayfire_view view;
+    wayfire_toplevel_view view;
     wlr_foreign_toplevel_handle_v1 *handle;
     foreign_toplevel_map_type *view_to_toplevel;
 
   public:
-    wayfire_foreign_toplevel(wayfire_view view, wlr_foreign_toplevel_handle_v1 *handle,
+    wayfire_foreign_toplevel(wayfire_toplevel_view view, wlr_foreign_toplevel_handle_v1 *handle,
         foreign_toplevel_map_type *view_to_toplevel)
     {
         this->view   = view;
@@ -96,10 +98,11 @@ class wayfire_foreign_toplevel
 
     void toplevel_send_state()
     {
-        wlr_foreign_toplevel_handle_v1_set_maximized(handle, view->tiled_edges == wf::TILED_EDGES_ALL);
+        wlr_foreign_toplevel_handle_v1_set_maximized(handle,
+            view->pending_tiled_edges() == wf::TILED_EDGES_ALL);
         wlr_foreign_toplevel_handle_v1_set_activated(handle, view->activated);
         wlr_foreign_toplevel_handle_v1_set_minimized(handle, view->minimized);
-        wlr_foreign_toplevel_handle_v1_set_fullscreen(handle, view->fullscreen);
+        wlr_foreign_toplevel_handle_v1_set_fullscreen(handle, view->pending_fullscreen());
 
         /* update parent as well */
         auto it = view_to_toplevel->find(view->parent);
@@ -178,18 +181,18 @@ class wayfire_foreign_toplevel
         toplevel_handle_v1_maximize_request.set_callback([&] (void *data)
         {
             auto ev = static_cast<wlr_foreign_toplevel_handle_v1_maximized_event*>(data);
-            view->tile_request(ev->maximized ? wf::TILED_EDGES_ALL : 0);
+            wf::get_core().default_wm->tile_request(view, ev->maximized ? wf::TILED_EDGES_ALL : 0);
         });
 
         toplevel_handle_v1_minimize_request.set_callback([&] (void *data)
         {
             auto ev = static_cast<wlr_foreign_toplevel_handle_v1_minimized_event*>(data);
-            view->minimize_request(ev->minimized);
+            wf::get_core().default_wm->minimize_request(view, ev->minimized);
         });
 
         toplevel_handle_v1_activate_request.set_callback([&] (auto)
         {
-            view->focus_request();
+            wf::get_core().default_wm->focus_request(view);
         });
 
         toplevel_handle_v1_close_request.set_callback([&] (auto)
@@ -216,12 +219,12 @@ class wayfire_foreign_toplevel
         {
             auto ev = static_cast<wlr_foreign_toplevel_handle_v1_fullscreen_event*>(data);
             auto wo = wf::get_core().output_layout->find_output(ev->output);
-            view->fullscreen_request(wo, ev->fullscreen);
+            wf::get_core().default_wm->fullscreen_request(view, wo, ev->fullscreen);
         });
     }
 
-    void handle_minimize_hint(wf::view_interface_t *view, wf::view_interface_t *relative_to,
-        const wlr_box& hint)
+    void handle_minimize_hint(wf::toplevel_view_interface_t *view, wf::view_interface_t *relative_to,
+        wlr_box hint)
     {
         if (relative_to->get_output() != view->get_output())
         {
@@ -229,7 +232,10 @@ class wayfire_foreign_toplevel
             /* TODO: translate coordinates in case minimize hint is on another output */
         }
 
-        view->set_minimize_hint(hint + wf::origin(relative_to->get_output_geometry()));
+        wf::pointf_t relative = relative_to->get_surface_root_node()->to_global({0, 0});
+        hint.x += relative.x;
+        hint.y += relative.y;
+        view->set_minimize_hint(hint);
     }
 };
 
@@ -254,21 +260,21 @@ class wayfire_foreign_toplevel_protocol_impl : public wf::plugin_interface_t
   private:
     wf::signal::connection_t<wf::view_mapped_signal> on_view_mapped = [=] (wf::view_mapped_signal *ev)
     {
-        if (ev->view->role == wf::VIEW_ROLE_TOPLEVEL)
+        if (auto toplevel = wf::toplevel_cast(ev->view))
         {
             auto handle = wlr_foreign_toplevel_handle_v1_create(toplevel_manager);
-            handle_for_view[ev->view] =
-                std::make_unique<wayfire_foreign_toplevel>(ev->view, handle, &handle_for_view);
+            handle_for_view[toplevel] =
+                std::make_unique<wayfire_foreign_toplevel>(toplevel, handle, &handle_for_view);
         }
     };
 
     wf::signal::connection_t<wf::view_unmapped_signal> on_view_unmapped = [=] (wf::view_unmapped_signal *ev)
     {
-        handle_for_view.erase(ev->view);
+        handle_for_view.erase(toplevel_cast(ev->view));
     };
 
     wlr_foreign_toplevel_manager_v1 *toplevel_manager;
-    std::map<wayfire_view, std::unique_ptr<wayfire_foreign_toplevel>> handle_for_view;
+    std::map<wayfire_toplevel_view, std::unique_ptr<wayfire_foreign_toplevel>> handle_for_view;
 };
 
 DECLARE_WAYFIRE_PLUGIN(wayfire_foreign_toplevel_protocol_impl);

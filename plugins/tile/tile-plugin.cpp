@@ -7,6 +7,8 @@
 #include <wayfire/matcher.hpp>
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/signal-definitions.hpp>
+#include <wayfire/toplevel-view.hpp>
+#include <wayfire/window-manager.hpp>
 
 #include "tree-controller.hpp"
 #include "tree.hpp"
@@ -20,17 +22,32 @@
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-provider.hpp"
+#include "wayfire/toplevel-view.hpp"
 #include "wayfire/view-helpers.hpp"
+#include "wayfire/txn/transaction-manager.hpp"
+
+struct autocommit_transaction_t
+{
+  public:
+    wf::txn::transaction_uptr tx;
+    autocommit_transaction_t()
+    {
+        tx = wf::txn::transaction_t::create();
+    }
+
+    ~autocommit_transaction_t()
+    {
+        if (!tx->get_objects().empty())
+        {
+            wf::get_core().tx_manager->schedule_transaction(std::move(tx));
+        }
+    }
+};
 
 namespace wf
 {
-static bool can_tile_view(wayfire_view view)
+static bool can_tile_view(wayfire_toplevel_view view)
 {
-    if (view->role != wf::VIEW_ROLE_TOPLEVEL)
-    {
-        return false;
-    }
-
     if (view->parent)
     {
         return false;
@@ -128,13 +145,12 @@ class tile_workspace_set_data_t : public wf::custom_data_t
 
     void update_root_size()
     {
-        if (!wset.lock()->get_attached_output())
-        {
-            return;
-        }
+        auto wo = wset.lock()->get_attached_output();
+        wf::geometry_t workarea = wo ? wo->workarea->get_workarea() : tile::default_output_resolution;
 
-        wf::geometry_t workarea = wset.lock()->get_attached_output()->workarea->get_workarea();
-        wf::geometry_t output_geometry = wset.lock()->get_attached_output()->get_relative_geometry();
+        wf::geometry_t output_geometry =
+            wset.lock()->get_last_output_geometry().value_or(tile::default_output_resolution);
+
         auto wsize = wset.lock()->get_workspace_grid_size();
         for (int i = 0; i < wsize.width; i++)
         {
@@ -144,7 +160,9 @@ class tile_workspace_set_data_t : public wf::custom_data_t
                 auto vp_geometry = workarea;
                 vp_geometry.x += i * output_geometry.width;
                 vp_geometry.y += j * output_geometry.height;
-                roots[i][j]->set_geometry(vp_geometry);
+
+                autocommit_transaction_t tx;
+                roots[i][j]->set_geometry(vp_geometry, tx.tx);
             }
         }
     }
@@ -176,8 +194,9 @@ class tile_workspace_set_data_t : public wf::custom_data_t
         {
             for (auto& root : col)
             {
-                root->set_gaps(gaps);
-                root->set_geometry(root->geometry);
+                autocommit_transaction_t tx;
+                root->set_gaps(gaps, tx.tx);
+                root->set_geometry(root->geometry, tx.tx);
             }
         }
     };
@@ -188,7 +207,8 @@ class tile_workspace_set_data_t : public wf::custom_data_t
         {
             for (auto& root : col)
             {
-                tile::flatten_tree(root);
+                autocommit_transaction_t tx;
+                tile::flatten_tree(root, tx.tx);
             }
         }
     }
@@ -226,7 +246,7 @@ class tile_workspace_set_data_t : public wf::custom_data_t
 
     std::weak_ptr<workspace_set_t> wset;
 
-    void attach_view(wayfire_view view, wf::point_t vp = {-1, -1})
+    void attach_view(wayfire_toplevel_view view, wf::point_t vp = {-1, -1})
     {
         view->set_allowed_actions(VIEW_ALLOW_WS_CHANGE);
 
@@ -236,7 +256,10 @@ class tile_workspace_set_data_t : public wf::custom_data_t
         }
 
         auto view_node = std::make_unique<wf::tile::view_node_t>(view);
-        roots[vp.x][vp.y]->as_split_node()->add_child(std::move(view_node));
+        {
+            autocommit_transaction_t tx;
+            roots[vp.x][vp.y]->as_split_node()->add_child(std::move(view_node), tx.tx);
+        }
 
         auto node = view->get_root_node();
         wf::scene::readd_front(tiled_sublayer[vp.x][vp.y], node);
@@ -249,13 +272,16 @@ class tile_workspace_set_data_t : public wf::custom_data_t
     {
         auto wview = view->view;
         wview->set_allowed_actions(VIEW_ALLOW_ALL);
-        view->parent->remove_child(view);
+        {
+            autocommit_transaction_t tx;
+            view->parent->remove_child(view, tx.tx);
+        }
         /* View node is invalid now */
         flatten_roots();
 
-        if (wview->fullscreen && wview->is_mapped())
+        if (wview->pending_fullscreen() && wview->is_mapped())
         {
-            wview->fullscreen_request(nullptr, false);
+            wf::get_core().default_wm->fullscreen_request(wview, nullptr, false);
         }
 
         /* Remove from special sublayer */
@@ -312,9 +338,9 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
     bool has_fullscreen_view()
     {
         int count_fullscreen = 0;
-        for_each_view(tile_workspace_set_data_t::get_current_root(output), [&] (wayfire_view view)
+        for_each_view(tile_workspace_set_data_t::get_current_root(output), [&] (wayfire_toplevel_view view)
         {
-            count_fullscreen += view->fullscreen;
+            count_fullscreen += view->pending_fullscreen();
         });
 
         return count_fullscreen > 0;
@@ -366,12 +392,12 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
         controller = get_default_controller();
     }
 
-    bool tile_window_by_default(wayfire_view view)
+    bool tile_window_by_default(wayfire_toplevel_view view)
     {
         return tile_by_default.matches(view) && can_tile_view(view);
     }
 
-    void attach_view(wayfire_view view, wf::point_t vp = {-1, -1})
+    void attach_view(wayfire_toplevel_view view, wf::point_t vp = {-1, -1})
     {
         if (!view->get_wset())
         {
@@ -390,10 +416,13 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
 
     wf::signal::connection_t<view_mapped_signal> on_view_mapped = [=] (view_mapped_signal *ev)
     {
-        if (tile_window_by_default(ev->view))
+        if (auto toplevel = toplevel_cast(ev->view))
         {
-            stop_controller(true);
-            tile_workspace_set_data_t::get(output).attach_view(ev->view);
+            if (tile_window_by_default(toplevel))
+            {
+                stop_controller(true);
+                tile_workspace_set_data_t::get(output).attach_view(toplevel);
+            }
         }
     };
 
@@ -418,10 +447,10 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
         ev->carried_out = true;
     };
 
-    void set_view_fullscreen(wayfire_view view, bool fullscreen)
+    void set_view_fullscreen(wayfire_toplevel_view view, bool fullscreen)
     {
-        /* Set fullscreen, and trigger resizing of the views */
-        view->set_fullscreen(fullscreen);
+        /* Set fullscreen, and trigger resizing of the views (which will commit the view) */
+        view->toplevel()->pending().fullscreen = fullscreen;
         tile_workspace_set_data_t::get(output).update_root_size();
     }
 
@@ -439,11 +468,18 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
 
     wf::signal::connection_t<focus_view_signal> on_focus_changed = [=] (focus_view_signal *ev)
     {
-        if (ev->view && tile::view_node_t::get_node(ev->view) && !ev->view->fullscreen)
+        if (!toplevel_cast(ev->view))
         {
-            for_each_view(tile_workspace_set_data_t::get_current_root(output), [&] (wayfire_view view)
+            return;
+        }
+
+        auto toplevel = toplevel_cast(ev->view);
+        if (tile::view_node_t::get_node(ev->view) && !toplevel->pending_fullscreen())
+        {
+            for_each_view(tile_workspace_set_data_t::get_current_root(output), [&] (
+                wayfire_toplevel_view view)
             {
-                if (view->fullscreen)
+                if (view->pending_fullscreen())
                 {
                     set_view_fullscreen(view, false);
                 }
@@ -451,7 +487,7 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
         }
     };
 
-    void change_view_workspace(wayfire_view view, wf::point_t vp = {-1, -1})
+    void change_view_workspace(wayfire_toplevel_view view, wf::point_t vp = {-1, -1})
     {
         auto existing_node = wf::tile::view_node_t::get_node(view);
         if (existing_node)
@@ -493,10 +529,10 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
      * @param need_tiled Whether the view needs to be tiled
      */
     bool conditioned_view_execute(bool need_tiled,
-        std::function<void(wayfire_view)> func)
+        std::function<void(wayfire_toplevel_view)> func)
     {
         auto view = output->get_active_view();
-        if (!view)
+        if (!toplevel_cast(view))
         {
             return false;
         }
@@ -508,7 +544,7 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
 
         if (output->can_activate_plugin(&grab_interface))
         {
-            func(view);
+            func(toplevel_cast(view));
             return true;
         }
 
@@ -517,13 +553,13 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
 
     wf::key_callback on_toggle_tiled_state = [=] (auto)
     {
-        return conditioned_view_execute(false, [=] (wayfire_view view)
+        return conditioned_view_execute(false, [=] (wayfire_toplevel_view view)
         {
             auto existing_node = tile::view_node_t::get_node(view);
             if (existing_node)
             {
                 detach_view(existing_node);
-                view->tile_request(0);
+                wf::get_core().default_wm->tile_request(view, 0);
             } else
             {
                 attach_view(view);
@@ -533,12 +569,12 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
 
     bool focus_adjacent(tile::split_insertion_t direction)
     {
-        return conditioned_view_execute(true, [=] (wayfire_view view)
+        return conditioned_view_execute(true, [=] (wayfire_toplevel_view view)
         {
             auto adjacent = tile::find_first_view_in_direction(
                 tile::view_node_t::get_node(view), direction);
 
-            bool was_fullscreen = view->fullscreen;
+            bool was_fullscreen = view->pending_fullscreen();
             if (adjacent)
             {
                 /* This will lower the fullscreen status of the view */
@@ -546,7 +582,7 @@ class tile_output_plugin_t : public wf::pointer_interaction_t, public wf::custom
 
                 if (was_fullscreen && keep_fullscreen_on_adjacent)
                 {
-                    adjacent->view->fullscreen_request(output, true);
+                    wf::get_core().default_wm->fullscreen_request(adjacent->view, output, true);
                 }
             }
         });
@@ -662,6 +698,18 @@ class tile_plugin_t : public wf::plugin_interface_t, wf::per_output_tracker_mixi
         }
     }
 
+    void stop_controller(std::shared_ptr<wf::workspace_set_t> wset)
+    {
+        if (auto wo = wset->get_attached_output())
+        {
+            auto tile = wo->get_data<tile_output_plugin_t>();
+            if (tile)
+            {
+                tile->stop_controller(true);
+            }
+        }
+    }
+
     wf::signal::connection_t<view_pre_moved_to_wset_signal> on_view_pre_moved_to_wset =
         [=] (view_pre_moved_to_wset_signal *ev)
     {
@@ -671,11 +719,7 @@ class tile_plugin_t : public wf::plugin_interface_t, wf::per_output_tracker_mixi
             ev->view->store_data(std::make_unique<wf::view_auto_tile_t>());
             if (ev->old_wset)
             {
-                if (auto wo = ev->old_wset->get_attached_output())
-                {
-                    wo->get_data<tile_output_plugin_t>()->stop_controller(true);
-                }
-
+                stop_controller(ev->old_wset);
                 tile_workspace_set_data_t::get(ev->old_wset).detach_view(node);
             }
         }
@@ -686,11 +730,7 @@ class tile_plugin_t : public wf::plugin_interface_t, wf::per_output_tracker_mixi
     {
         if (ev->view->has_data<view_auto_tile_t>() && ev->new_wset)
         {
-            if (auto wo = ev->new_wset->get_attached_output())
-            {
-                wo->get_data<tile_output_plugin_t>()->stop_controller(true);
-            }
-
+            stop_controller(ev->new_wset);
             tile_workspace_set_data_t::get(ev->new_wset).attach_view(ev->view);
         }
     };

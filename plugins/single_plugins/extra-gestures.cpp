@@ -5,6 +5,8 @@
 #include <wayfire/option-wrapper.hpp>
 #include <wayfire/output-layout.hpp>
 #include <wayfire/output.hpp>
+#include <wayfire/toplevel-view.hpp>
+#include <wayfire/window-manager.hpp>
 
 #include <wayfire/util/log.hpp>
 
@@ -87,7 +89,13 @@ class extra_gestures_plugin_t : public per_output_plugin_instance_t
         touch_and_hold_move = std::make_unique<gesture_t>(std::move(actions),
             [=] ()
         {
-            execute_view_action([] (wayfire_view view) { view->move_request(); });
+            execute_view_action([] (wayfire_view view)
+            {
+                if (auto toplevel = wf::toplevel_cast(view))
+                {
+                    wf::get_core().default_wm->move_request(toplevel);
+                }
+            });
         });
     }
 

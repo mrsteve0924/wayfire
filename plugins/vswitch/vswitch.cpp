@@ -53,7 +53,7 @@ class vswitch : public wf::per_output_plugin_instance_t
             [=] () { output->deactivate_plugin(&grab_interface); });
 
         bindings = std::make_unique<wf::vswitch::control_bindings_t>(output);
-        bindings->setup([this] (wf::point_t delta, wayfire_view view, bool only_view)
+        bindings->setup([this] (wf::point_t delta, wayfire_toplevel_view view, bool only_view)
         {
             // Do not switch workspace with sticky view, they are on all
             // workspaces anyway
@@ -76,9 +76,8 @@ class vswitch : public wf::per_output_plugin_instance_t
 
                     for (auto& v : view->enumerate_views(false))
                     {
-                        auto origin = wf::origin(v->get_wm_geometry());
-                        v->move(origin.x + delta.x * size.width,
-                            origin.y + delta.y * size.height);
+                        auto origin = wf::origin(v->get_pending_geometry());
+                        v->move(origin.x + delta.x * size.width, origin.y + delta.y * size.height);
                     }
 
                     wf::view_change_workspace_signal data;
@@ -159,7 +158,7 @@ class vswitch : public wf::per_output_plugin_instance_t
             view = nullptr;
         }
 
-        algorithm->set_overlay_view(view);
+        algorithm->set_overlay_view(toplevel_cast(view));
         algorithm->set_target_workspace(
             output->wset()->get_current_workspace() + delta);
 

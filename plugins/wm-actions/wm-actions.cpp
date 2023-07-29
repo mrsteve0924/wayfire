@@ -3,11 +3,17 @@
 #include <wayfire/output.hpp>
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/util/log.hpp>
+#include "plugins/common/wayfire/plugins/common/shared-core-data.hpp"
+#include "plugins/ipc/ipc-method-repository.hpp"
+#include "plugins/ipc/ipc-helpers.hpp"
 #include "wayfire/core.hpp"
+#include "wayfire/plugin.hpp"
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-definitions.hpp"
 #include "wayfire/signal-provider.hpp"
+#include "wayfire/toplevel-view.hpp"
+#include "wayfire/window-manager.hpp"
 #include "wm-actions-signals.hpp"
 
 class always_on_top_root_node_t : public wf::scene::output_node_t
@@ -21,7 +27,7 @@ class always_on_top_root_node_t : public wf::scene::output_node_t
     }
 };
 
-class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
+class wayfire_wm_actions_output_t : public wf::per_output_plugin_instance_t
 {
     wf::scene::floating_inner_ptr always_above;
     bool showdesktop_active = false;
@@ -45,6 +51,8 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
         .name = "wm-actions",
         .capabilities = 0,
     };
+
+  public:
 
     bool set_keep_above_state(wayfire_view view, bool above)
     {
@@ -77,22 +85,18 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
      * Find the selected toplevel view, or nullptr if the selected view is not
      * toplevel.
      */
-    wayfire_view choose_view(wf::activator_source_t source)
+    wayfire_toplevel_view choose_view(wf::activator_source_t source)
     {
         wayfire_view view;
         if (source == wf::activator_source_t::BUTTONBINDING)
         {
             view = wf::get_core().get_cursor_focus_view();
-        }
-
-        view = output->get_active_view();
-        if (!view || (view->role != wf::VIEW_ROLE_TOPLEVEL))
-        {
-            return nullptr;
         } else
         {
-            return view;
+            view = output->get_active_view();
         }
+
+        return wf::toplevel_cast(view);
     }
 
     /**
@@ -197,7 +201,7 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
      * Execute for_view on the selected view, if available.
      */
     bool execute_for_selected_view(wf::activator_source_t source,
-        std::function<bool(wayfire_view)> for_view)
+        std::function<bool(wayfire_toplevel_view)> for_view)
     {
         auto view = choose_view(source);
         if (!view || !output->can_activate_plugin(&grab_interface))
@@ -220,35 +224,36 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
 
     wf::activator_callback on_minimize = [=] (auto ev) -> bool
     {
-        return execute_for_selected_view(ev.source, [] (wayfire_view view)
+        return execute_for_selected_view(ev.source, [] (wayfire_toplevel_view view)
         {
-            view->minimize_request(!view->minimized);
+            wf::get_core().default_wm->minimize_request(view, !view->minimized);
             return true;
         });
     };
 
     wf::activator_callback on_toggle_maximize = [=] (auto ev) -> bool
     {
-        return execute_for_selected_view(ev.source, [] (wayfire_view view)
+        return execute_for_selected_view(ev.source, [] (wayfire_toplevel_view view)
         {
-            view->tile_request(view->tiled_edges ==
-                wf::TILED_EDGES_ALL ? 0 : wf::TILED_EDGES_ALL);
+            wf::get_core().default_wm->tile_request(view,
+                view->pending_tiled_edges() == wf::TILED_EDGES_ALL ? 0 : wf::TILED_EDGES_ALL);
             return true;
         });
     };
 
     wf::activator_callback on_toggle_fullscreen = [=] (auto ev) -> bool
     {
-        return execute_for_selected_view(ev.source, [] (wayfire_view view)
+        return execute_for_selected_view(ev.source, [] (wayfire_toplevel_view view)
         {
-            view->fullscreen_request(view->get_output(), !view->fullscreen);
+            wf::get_core().default_wm->fullscreen_request(view, view->get_output(),
+                !view->pending_fullscreen());
             return true;
         });
     };
 
     wf::activator_callback on_toggle_sticky = [=] (auto ev) -> bool
     {
-        return execute_for_selected_view(ev.source, [] (wayfire_view view)
+        return execute_for_selected_view(ev.source, [] (wayfire_toplevel_view view)
         {
             view->set_sticky(view->sticky ^ 1);
             return true;
@@ -265,10 +270,8 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
             {
                 if (!view->minimized)
                 {
-                    view->minimize_request(true);
-                    view->store_data(
-                        std::make_unique<wf::custom_data_t>(),
-                        "wm-actions-showdesktop");
+                    wf::get_core().default_wm->minimize_request(view, true);
+                    view->store_data(std::make_unique<wf::custom_data_t>(), "wm-actions-showdesktop");
                 }
             }
 
@@ -340,7 +343,7 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
             if (view->has_data("wm-actions-showdesktop"))
             {
                 view->erase_data("wm-actions-showdesktop");
-                view->minimize_request(false);
+                wf::get_core().default_wm->minimize_request(view, false);
             }
         }
 
@@ -385,4 +388,107 @@ class wayfire_wm_actions_t : public wf::per_output_plugin_instance_t
     }
 };
 
-DECLARE_WAYFIRE_PLUGIN(wf::per_output_plugin_t<wayfire_wm_actions_t>);
+class wayfire_wm_actions_t : public wf::plugin_interface_t,
+    public wf::per_output_tracker_mixin_t<wayfire_wm_actions_output_t>
+{
+    wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> ipc_repo;
+
+  public:
+    void init() override
+    {
+        init_output_tracking();
+        ipc_repo->register_method("wm-actions/set-minimized", ipc_minimize);
+        ipc_repo->register_method("wm-actions/set-always-on-top", ipc_set_always_on_top);
+        ipc_repo->register_method("wm-actions/set-fullscreen", ipc_set_fullscreen);
+        ipc_repo->register_method("wm-actions/set-sticky", ipc_set_sticky);
+        ipc_repo->register_method("wm-actions/send-to-back", ipc_send_to_back);
+    }
+
+    void fini() override
+    {
+        fini_output_tracking();
+        ipc_repo->unregister_method("wm-actions/set-minimized");
+        ipc_repo->unregister_method("wm-actions/set-always-on-top");
+        ipc_repo->unregister_method("wm-actions/set-fullscreen");
+        ipc_repo->unregister_method("wm-actions/set-sticky");
+        ipc_repo->unregister_method("wm-actions/send-to-back");
+    }
+
+    nlohmann::json execute_for_view(const nlohmann::json& params,
+        std::function<void(wayfire_toplevel_view, bool)> view_op)
+    {
+        WFJSON_EXPECT_FIELD(params, "view_id", number_integer);
+        WFJSON_EXPECT_FIELD(params, "state", boolean);
+
+        wayfire_toplevel_view view = toplevel_cast(wf::ipc::find_view_by_id(params["view_id"]));
+        if (!view)
+        {
+            return wf::ipc::json_error("toplevel view id not found!");
+        }
+
+        bool state = params["state"];
+        view_op(view, state);
+        return wf::ipc::json_ok();
+    }
+
+    wf::ipc::method_callback ipc_minimize = [=] (const nlohmann::json& js)
+    {
+        return execute_for_view(js, [=] (wayfire_toplevel_view view, bool state)
+        {
+            wf::get_core().default_wm->minimize_request(view, state);
+        });
+    };
+
+    wf::ipc::method_callback ipc_maximize = [=] (const nlohmann::json& js)
+    {
+        return execute_for_view(js, [=] (wayfire_toplevel_view view, bool state)
+        {
+            wf::get_core().default_wm->tile_request(view, state ? wf::TILED_EDGES_ALL : 0);
+        });
+    };
+
+    wf::ipc::method_callback ipc_set_always_on_top = [=] (const nlohmann::json& js)
+    {
+        return execute_for_view(js, [=] (wayfire_toplevel_view view, bool state)
+        {
+            if (!view->get_output())
+            {
+                view->store_data(std::make_unique<wf::custom_data_t>(), "wm-actions-above");
+                return;
+            }
+
+            output_instance[view->get_output()]->set_keep_above_state(view, state);
+        });
+    };
+
+    wf::ipc::method_callback ipc_set_fullscreen = [=] (const nlohmann::json& js)
+    {
+        return execute_for_view(js, [=] (wayfire_toplevel_view view, bool state)
+        {
+            wf::get_core().default_wm->fullscreen_request(view, nullptr, state);
+        });
+    };
+
+    wf::ipc::method_callback ipc_set_sticky = [=] (const nlohmann::json& js)
+    {
+        return execute_for_view(js, [=] (wayfire_toplevel_view view, bool state)
+        {
+            view->set_sticky(state);
+        });
+    };
+
+    wf::ipc::method_callback ipc_send_to_back = [=] (const nlohmann::json& js)
+    {
+        return execute_for_view(js, [=] (wayfire_toplevel_view view, bool state)
+        {
+            if (!view->get_output())
+            {
+                return;
+            }
+
+            output_instance[view->get_output()]->do_send_to_back(view);
+        });
+    };
+};
+
+DECLARE_WAYFIRE_PLUGIN(wayfire_wm_actions_t);

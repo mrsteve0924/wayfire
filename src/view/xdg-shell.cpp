@@ -1,11 +1,13 @@
+#include <string>
 #include <wayfire/util/log.hpp>
 #include <wayfire/debug.hpp>
 #include "view/view-impl.hpp"
 #include "wayfire/core.hpp"
 #include "surface-impl.hpp"
+#include "wayfire/geometry.hpp"
 #include "wayfire/output.hpp"
-#include "wayfire/decorator.hpp"
 #include "wayfire/scene-operations.hpp"
+#include "wayfire/scene-render.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/view-helpers.hpp"
 #include "wayfire/view.hpp"
@@ -18,14 +20,31 @@
 #include "xdg-shell/xdg-toplevel-view.hpp"
 #include "view-keyboard-interaction.hpp"
 
-wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) :
-    wf::wlr_view_t()
+class wayfire_xdg_popup_node : public wf::scene::translation_node_t
+{
+  public:
+    wayfire_xdg_popup_node(uint64_t view_id) : id(view_id)
+    {}
+
+    std::string stringify() const override
+    {
+        return "xdg-popup view id=" + std::to_string(id) + " " + stringify_flags();
+    }
+
+  private:
+    uint64_t id = 0;
+};
+
+wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) : wf::view_interface_t()
 {
     this->popup_parent = wf::wl_surface_to_wayfire_view(popup->parent->resource).get();
     this->popup = popup;
     this->role  = wf::VIEW_ROLE_UNMANAGED;
     this->priv->keyboard_focus_enabled = false;
+    this->surface_root_node = std::make_shared<wayfire_xdg_popup_node>(this->get_id());
+    this->set_surface_root_node(surface_root_node);
     this->set_output(popup_parent->get_output());
+
 
     if (!dynamic_cast<wayfire_xdg_popup*>(popup_parent.get()))
     {
@@ -41,17 +60,20 @@ wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) :
 
         wf::get_core().connect(&on_keyboard_focus_changed);
     }
+
+    on_surface_commit.set_callback([&] (void*) { commit(); });
 }
+
+wayfire_xdg_popup::~wayfire_xdg_popup() = default;
 
 void wayfire_xdg_popup::initialize()
 {
-    wf::wlr_view_t::initialize();
+    wf::view_interface_t::initialize();
+    this->main_surface = std::make_shared<wf::scene::wlr_surface_node_t>(popup->base->surface, true);
+
     LOGI("New xdg popup");
-    on_map.set_callback([&] (void*) { map(this->popup->base->surface); });
-    on_unmap.set_callback([&] (void*)
-    {
-        unmap();
-    });
+    on_map.set_callback([&] (void*) { map(); });
+    on_unmap.set_callback([&] (void*) { unmap(); });
     on_destroy.set_callback([&] (void*) { destroy(); });
     on_new_popup.set_callback([&] (void *data)
     {
@@ -89,7 +111,7 @@ void wayfire_xdg_popup::initialize()
     unconstrain();
 }
 
-void wayfire_xdg_popup::map(wlr_surface *surface)
+void wayfire_xdg_popup::map()
 {
     wf::scene::layer parent_layer = wf::get_view_layer(popup_parent).value_or(wf::scene::layer::WORKSPACE);
     auto target_layer = wf::scene::layer::UNMANAGED;
@@ -99,13 +121,33 @@ void wayfire_xdg_popup::map(wlr_surface *surface)
     }
 
     wf::scene::readd_front(get_output()->node_for_layer(target_layer), get_root_node());
-    wlr_view_t::map(surface);
+
+    on_surface_commit.connect(&popup->base->surface->events.commit);
+    priv->set_mapped_surface_contents(main_surface);
+    priv->set_mapped(true);
+    update_size();
+
+    damage();
+    emit_view_map();
     update_position();
+}
+
+void wayfire_xdg_popup::unmap()
+{
+    damage();
+    emit_view_pre_unmap();
+
+    main_surface = nullptr;
+    priv->unset_mapped_surface_contents();
+    on_surface_commit.disconnect();
+
+    emit_view_unmap();
+    priv->set_mapped(false);
 }
 
 void wayfire_xdg_popup::commit()
 {
-    wlr_view_t::commit();
+    update_size();
     update_position();
 }
 
@@ -116,6 +158,7 @@ void wayfire_xdg_popup::update_position()
         return;
     }
 
+    // Offset relative to the parent surface
     wf::pointf_t popup_offset = {1.0 * popup->current.geometry.x, 1.0 * popup->current.geometry.y};
     if (wlr_surface_is_xdg_surface(popup->parent))
     {
@@ -125,9 +168,12 @@ void wayfire_xdg_popup::update_position()
         popup_offset.y += box.y;
     }
 
-    auto parent_geometry = popup_parent->get_output_geometry();
-    popup_offset.x += parent_geometry.x - popup->base->current.geometry.x;
-    popup_offset.y += parent_geometry.y - popup->base->current.geometry.y;
+    // Get the {0, 0} of the parent view in output coordinates
+    popup_offset += popup_parent->get_surface_root_node()->to_global({0, 0});
+
+    // Subtract shadows, etc.
+    popup_offset.x -= popup->base->current.geometry.x;
+    popup_offset.y -= popup->base->current.geometry.y;
 
     // Apply transformers to the popup position
     auto node = popup_parent->get_surface_root_node()->parent();
@@ -161,10 +207,9 @@ void wayfire_xdg_popup::unconstrain()
     }
 
     auto box = get_output()->get_relative_geometry();
-    auto wm  = toplevel_parent->get_output_geometry();
-    box.x -= wm.x;
-    box.y -= wm.y;
-
+    auto parent_offset = toplevel_parent->get_surface_root_node()->to_global({0, 0});
+    box.x -= parent_offset.x;
+    box.y -= parent_offset.y;
     wlr_xdg_popup_unconstrain_from_box(popup, &box);
 }
 
@@ -175,8 +220,8 @@ void wayfire_xdg_popup::destroy()
     on_destroy.disconnect();
     on_new_popup.disconnect();
     on_ping_timeout.disconnect();
-
-    wlr_view_t::destroy();
+    /* Drop the internal reference */
+    unref();
 }
 
 void wayfire_xdg_popup::close()
@@ -193,6 +238,78 @@ void wayfire_xdg_popup::ping()
     {
         wlr_xdg_surface_ping(popup->base);
     }
+}
+
+void wayfire_xdg_popup::update_size()
+{
+    if (!is_mapped())
+    {
+        return;
+    }
+
+    wf::dimensions_t current_size{popup->base->surface->current.width, popup->base->surface->current.height};
+    if (current_size == wf::dimensions(geometry))
+    {
+        return;
+    }
+
+    /* Damage current size */
+    wf::scene::damage_node(get_root_node(), last_bounding_box);
+    geometry.width  = current_size.width;
+    geometry.height = current_size.height;
+
+    /* Damage new size */
+    last_bounding_box = get_bounding_box();
+    wf::scene::damage_node(get_root_node(), last_bounding_box);
+    wf::scene::update(this->get_surface_root_node(), wf::scene::update_flag::GEOMETRY);
+}
+
+bool wayfire_xdg_popup::is_mapped() const
+{
+    return priv->wsurface != nullptr;
+}
+
+void wayfire_xdg_popup::handle_app_id_changed(std::string new_app_id)
+{
+    this->app_id = new_app_id;
+    wf::emit_app_id_changed_signal(self());
+}
+
+void wayfire_xdg_popup::handle_title_changed(std::string new_title)
+{
+    this->title = new_title;
+    wf::emit_title_changed_signal(self());
+}
+
+std::string wayfire_xdg_popup::get_app_id()
+{
+    return this->app_id;
+}
+
+std::string wayfire_xdg_popup::get_title()
+{
+    return this->title;
+}
+
+void wayfire_xdg_popup::move(int x, int y)
+{
+    wf::scene::damage_node(get_root_node(), last_bounding_box);
+    surface_root_node->set_offset({x, y});
+    geometry.x = x;
+    geometry.y = y;
+    damage();
+    last_bounding_box = get_bounding_box();
+    wf::scene::update(this->get_surface_root_node(), wf::scene::update_flag::GEOMETRY);
+}
+
+wf::geometry_t wayfire_xdg_popup::get_geometry()
+{
+    return geometry;
+}
+
+wlr_surface*wayfire_xdg_popup::get_keyboard_focus_surface()
+{
+    return nullptr;
 }
 
 void create_xdg_popup(wlr_xdg_popup *popup)

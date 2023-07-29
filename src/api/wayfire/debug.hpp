@@ -74,6 +74,10 @@ enum class logging_category : size_t
     WSET    = 6,
     // Keyboard-related events
     KBD     = 7,
+    // Xwayland-related events
+    XWL     = 8,
+    // Layer-shell-related events
+    LSHELL  = 9,
     TOTAL,
 };
 

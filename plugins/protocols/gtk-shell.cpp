@@ -8,6 +8,7 @@
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
 #include <wayfire/plugin.hpp>
+#include <wayfire/toplevel-view.hpp>
 
 #include "gtk-shell.hpp"
 
@@ -138,37 +139,37 @@ static void append_to_array(wl_array *array, uint32_t value)
  * Tells the client about the window state in more detail than xdg_surface.
  * This currently only includes which edges are tiled.
  */
-static void send_gtk_surface_configure(wf_gtk_surface *surface, wayfire_view view)
+static void send_gtk_surface_configure(wf_gtk_surface *surface, wayfire_toplevel_view view)
 {
     int version = wl_resource_get_version(surface->resource);
     wl_array states;
     wl_array_init(&states);
 
-    if (view->tiled_edges)
+    if (view->pending_tiled_edges())
     {
         append_to_array(&states, GTK_SURFACE1_STATE_TILED);
     }
 
     if ((version >= GTK_SURFACE1_STATE_TILED_TOP_SINCE_VERSION) &&
-        (view->tiled_edges & WLR_EDGE_TOP))
+        (view->pending_tiled_edges() & WLR_EDGE_TOP))
     {
         append_to_array(&states, GTK_SURFACE1_STATE_TILED_TOP);
     }
 
     if ((version >= GTK_SURFACE1_STATE_TILED_RIGHT_SINCE_VERSION) &&
-        (view->tiled_edges & WLR_EDGE_RIGHT))
+        (view->pending_tiled_edges() & WLR_EDGE_RIGHT))
     {
         append_to_array(&states, GTK_SURFACE1_STATE_TILED_RIGHT);
     }
 
     if ((version >= GTK_SURFACE1_STATE_TILED_BOTTOM_SINCE_VERSION) &&
-        (view->tiled_edges & WLR_EDGE_BOTTOM))
+        (view->pending_tiled_edges() & WLR_EDGE_BOTTOM))
     {
         append_to_array(&states, GTK_SURFACE1_STATE_TILED_BOTTOM);
     }
 
     if ((version >= GTK_SURFACE1_STATE_TILED_LEFT_SINCE_VERSION) &&
-        (view->tiled_edges & WLR_EDGE_LEFT))
+        (view->pending_tiled_edges() & WLR_EDGE_LEFT))
     {
         append_to_array(&states, GTK_SURFACE1_STATE_TILED_LEFT);
     }
@@ -180,13 +181,12 @@ static void send_gtk_surface_configure(wf_gtk_surface *surface, wayfire_view vie
 /**
  * Tells gtk which edges should be resizable.
  */
-static void send_gtk_surface_configure_edges(wf_gtk_surface *surface,
-    wayfire_view view)
+static void send_gtk_surface_configure_edges(wf_gtk_surface *surface, wayfire_toplevel_view view)
 {
     wl_array edges;
     wl_array_init(&edges);
 
-    if (!view->tiled_edges)
+    if (!view->pending_tiled_edges())
     {
         append_to_array(&edges, GTK_SURFACE1_EDGE_CONSTRAINT_RESIZABLE_TOP);
         append_to_array(&edges, GTK_SURFACE1_EDGE_CONSTRAINT_RESIZABLE_RIGHT);
@@ -203,7 +203,7 @@ static void send_gtk_surface_configure_edges(wf_gtk_surface *surface,
  */
 static void handle_xdg_surface_on_configure(wf_gtk_surface *surface)
 {
-    wayfire_view view = wf::wl_surface_to_wayfire_view(surface->wl_surface);
+    wayfire_toplevel_view view = wf::toplevel_cast(wf::wl_surface_to_wayfire_view(surface->wl_surface));
     if (view)
     {
         send_gtk_surface_configure(surface, view);

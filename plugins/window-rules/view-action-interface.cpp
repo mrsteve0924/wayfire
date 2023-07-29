@@ -1,6 +1,8 @@
 #include "view-action-interface.hpp"
 
+#include "wayfire/core.hpp"
 #include "wayfire/output.hpp"
+#include "wayfire/toplevel-view.hpp"
 #include "wayfire/view.hpp"
 #include "wayfire/workspace-set.hpp"
 #include "wayfire/plugins/grid.hpp"
@@ -9,6 +11,7 @@
 #include "wayfire/output-layout.hpp"
 #include "../wm-actions/wm-actions-signals.hpp"
 #include <wayfire/plugins/common/util.hpp>
+#include <wayfire/window-manager.hpp>
 
 #include <algorithm>
 #include <cfloat>
@@ -118,36 +121,34 @@ bool view_action_interface_t::execute(const std::string & name,
 
         auto location = wf::get_string(args.at(0));
 
-        wf::grid::grid_snap_view_signal data;
-        data.view = _view;
-
+        grid::slot_t slot;
         if (location == "top")
         {
-            data.slot = grid::SLOT_TOP;
+            slot = grid::SLOT_TOP;
         } else if (location == "top_right")
         {
-            data.slot = grid::SLOT_TR;
+            slot = grid::SLOT_TR;
         } else if (location == "right")
         {
-            data.slot = grid::SLOT_RIGHT;
+            slot = grid::SLOT_RIGHT;
         } else if (location == "bottom_right")
         {
-            data.slot = grid::SLOT_BR;
+            slot = grid::SLOT_BR;
         } else if (location == "bottom")
         {
-            data.slot = grid::SLOT_BOTTOM;
+            slot = grid::SLOT_BOTTOM;
         } else if (location == "bottom_left")
         {
-            data.slot = grid::SLOT_BL;
+            slot = grid::SLOT_BL;
         } else if (location == "left")
         {
-            data.slot = grid::SLOT_LEFT;
+            slot = grid::SLOT_LEFT;
         } else if (location == "top_left")
         {
-            data.slot = grid::SLOT_TL;
+            slot = grid::SLOT_TL;
         } else if (location == "center")
         {
-            data.slot = grid::SLOT_CENTER;
+            slot = grid::SLOT_CENTER;
         } else
         {
             LOGE(
@@ -158,9 +159,7 @@ bool view_action_interface_t::execute(const std::string & name,
         }
 
         LOGI("View action interface: Snap to ", location, ".");
-
-        output->emit(&data);
-
+        wf::get_core().default_wm->tile_request(_view, grid::get_tiled_edges_for_slot(slot));
         return false;
     } else if (name == "start_on_output")
     {
@@ -216,19 +215,19 @@ bool view_action_interface_t::execute(const std::string & name,
     return true;
 }
 
-void view_action_interface_t::set_view(wayfire_view view)
+void view_action_interface_t::set_view(wayfire_toplevel_view view)
 {
     _view = view;
 }
 
 void view_action_interface_t::_maximize()
 {
-    _view->tile_request(wf::TILED_EDGES_ALL);
+    wf::get_core().default_wm->tile_request(_view, wf::TILED_EDGES_ALL);
 }
 
 void view_action_interface_t::_unmaximize()
 {
-    _view->tile_request(0);
+    wf::get_core().default_wm->tile_request(_view, 0);
 }
 
 void view_action_interface_t::_minimize()
@@ -239,6 +238,10 @@ void view_action_interface_t::_minimize()
 void view_action_interface_t::_unminimize()
 {
     _view->set_minimized(false);
+    if (_view->get_output())
+    {
+        _view->get_output()->focus_view(_view, true);
+    }
 }
 
 void view_action_interface_t::_make_sticky()
@@ -484,7 +487,7 @@ void view_action_interface_t::_move(int x, int y)
     if (output != nullptr)
     {
         auto grid = this->_get_workspace_grid_geometry(output);
-        auto view_geometry = _view->get_wm_geometry();
+        auto view_geometry = _view->get_pending_geometry();
         view_geometry.x = x;
         view_geometry.y = y;
 
@@ -516,7 +519,7 @@ void view_action_interface_t::_assign_ws(wf::point_t point)
     auto delta = point - output->wset()->get_current_workspace();
     auto size  = output->get_screen_size();
 
-    auto wm = _view->get_wm_geometry();
+    auto wm = _view->get_pending_geometry();
     _view->move(wm.x + delta.x * size.width, wm.y + delta.y * size.height);
 }
 } // End namespace wf.

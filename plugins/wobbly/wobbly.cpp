@@ -243,7 +243,7 @@ class iwobbly_state_t
      * This isn't really meant to be used standalone, only subclasses should
      * be instantiated.
      */
-    iwobbly_state_t(const wobbly_model_t& m, wayfire_view v) :
+    iwobbly_state_t(const wobbly_model_t& m, wayfire_toplevel_view v) :
         view(v), model(m)
     {
         bounding_box = {model->x, model->y, model->width, model->height};
@@ -283,7 +283,7 @@ class iwobbly_state_t
     }
 
   protected:
-    wayfire_view view;
+    wayfire_toplevel_view view;
     const wobbly_model_t& model;
     wf::geometry_t bounding_box;
 };
@@ -471,7 +471,7 @@ class wobbly_state_floating_t : public iwobbly_state_t
         /* Synchronize view position with the model */
         auto new_bbox = view->get_transformed_node()->get_transformer("wobbly")
             ->get_children_bounding_box();
-        auto wm = view->get_wm_geometry();
+        auto wm = view->get_geometry();
 
         int target_x = model->x + wm.x - new_bbox.x;
         int target_y = model->y + wm.y - new_bbox.y;
@@ -548,7 +548,7 @@ class wobbly_state_free_t : public iwobbly_state_t
 class wobbly_transformer_node_t : public wf::scene::floating_inner_node_t
 {
   public:
-    wobbly_transformer_node_t(wayfire_view view) : floating_inner_node_t(false)
+    wobbly_transformer_node_t(wayfire_toplevel_view view) : floating_inner_node_t(false)
     {
         this->view = view;
         init_model();
@@ -609,7 +609,7 @@ class wobbly_transformer_node_t : public wf::scene::floating_inner_node_t
     }
 
   private:
-    wayfire_view view;
+    wayfire_toplevel_view view;
     wf::effect_hook_t pre_hook;
 
     wf::signal::connection_t<wf::view_unmapped_signal> on_view_unmap = [=] (wf::view_unmapped_signal*)
@@ -740,7 +740,7 @@ class wobbly_transformer_node_t : public wf::scene::floating_inner_node_t
             tiled = force_tile;
         } else
         {
-            tiled = (force_tile || view->tiled_edges) || view->fullscreen;
+            tiled = (force_tile || view->pending_tiled_edges()) || view->pending_fullscreen();
         }
 
         uint32_t next_state_mask = 0;

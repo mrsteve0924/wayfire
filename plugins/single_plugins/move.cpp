@@ -1,3 +1,5 @@
+#include "wayfire/debug.hpp"
+#include "wayfire/geometry.hpp"
 #include "wayfire/plugins/common/input-grab.hpp"
 #include "wayfire/scene-input.hpp"
 #include "wayfire/signal-provider.hpp"
@@ -14,6 +16,7 @@
 #include <wayfire/touch/touch.hpp>
 #include <wayfire/plugins/vswitch.hpp>
 #include <wayfire/workarea.hpp>
+#include <wayfire/window-manager.hpp>
 
 #include <cmath>
 #include <linux/input.h>
@@ -92,10 +95,8 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
 
             if (enable_snap && (slot.slot_id != wf::grid::SLOT_NONE))
             {
-                wf::grid::grid_snap_view_signal data;
-                data.view = ev->main_view;
-                data.slot = slot.slot_id;
-                output->emit(&data);
+                wf::get_core().default_wm->tile_request(ev->main_view,
+                    wf::grid::get_tiled_edges_for_slot(slot.slot_id));
 
                 /* Update slot, will hide the preview as well */
                 update_slot(wf::grid::SLOT_NONE);
@@ -155,7 +156,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
 
         activate_binding = [=] (auto)
         {
-            auto view = wf::get_core().get_cursor_focus_view();
+            auto view = toplevel_cast(wf::get_core().get_cursor_focus_view());
             if (view && (view->role != wf::VIEW_ROLE_DESKTOP_ENVIRONMENT))
             {
                 initiate(view, get_global_input_coords());
@@ -222,7 +223,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
      * Activation flags ignore input inhibitors if the view is in the desktop
      * widget layer (i.e OSKs)
      */
-    uint32_t get_act_flags(wayfire_view view)
+    uint32_t get_act_flags(wayfire_toplevel_view view)
     {
         auto view_layer = wf::get_view_layer(view).value_or(wf::scene::layer::WORKSPACE);
         /* Allow moving an on-screen keyboard while screen is locked */
@@ -242,7 +243,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
      * Usually, this is the view itself or its topmost parent if the join_views
      * option is set.
      */
-    wayfire_view get_target_view(wayfire_view view)
+    wayfire_toplevel_view get_target_view(wayfire_toplevel_view view)
     {
         while (view && view->parent && join_views)
         {
@@ -252,7 +253,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
         return view;
     }
 
-    bool can_move_view(wayfire_view view)
+    bool can_move_view(wayfire_toplevel_view view)
     {
         if (!view || !view->is_mapped() || !(view->get_allowed_actions() & wf::VIEW_ALLOW_MOVE))
         {
@@ -263,7 +264,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
         return output->can_activate_plugin(&grab_interface, get_act_flags(view));
     }
 
-    bool grab_input(wayfire_view view)
+    bool grab_input(wayfire_toplevel_view view)
     {
         view = view ?: drag_helper->view;
         if (!view)
@@ -281,7 +282,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
         return true;
     }
 
-    bool initiate(wayfire_view view, wf::point_t grab_position)
+    bool initiate(wayfire_toplevel_view view, wf::point_t grab_position)
     {
         // First, make sure that the view is on the output the input is.
         auto target_output = wf::get_core().output_layout->get_output_at(grab_position.x, grab_position.y);
@@ -291,14 +292,14 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
                 -wf::origin(target_output->get_layout_geometry());
 
             move_view_to_output(view, target_output, false);
-            view->move(view->get_wm_geometry().x + offset.x, view->get_wm_geometry().y + offset.y);
+            view->move(view->get_geometry().x + offset.x, view->get_geometry().y + offset.y);
 
             // On the new output
-            view->move_request();
+            wf::get_core().default_wm->move_request(view);
             return false;
         }
 
-        wayfire_view grabbed_view = view;
+        wayfire_toplevel_view grabbed_view = view;
         view = get_target_view(view);
         if (!can_move_view(view))
         {
@@ -312,7 +313,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
 
         wf::move_drag::drag_options_t opts;
         opts.enable_snap_off = move_enable_snap_off &&
-            (view->fullscreen || view->tiled_edges);
+            (view->pending_fullscreen() || view->pending_tiled_edges());
         opts.snap_off_threshold = move_snap_off_threshold;
         opts.join_views = join_views;
 
@@ -476,25 +477,21 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
         /* Show a preview overlay */
         if (new_slot_id)
         {
-            wf::grid::grid_query_geometry_signal query;
-            query.slot = new_slot_id;
-            query.out_geometry = {0, 0, -1, -1};
-            output->emit(&query);
-
+            wf::geometry_t slot_geometry = wf::grid::get_slot_dimensions(output, new_slot_id);
             /* Unknown slot geometry, can't show a preview */
-            if ((query.out_geometry.width <= 0) || (query.out_geometry.height <= 0))
+            if ((slot_geometry.width <= 0) || (slot_geometry.height <= 0))
             {
                 return;
             }
 
             auto input   = get_input_coords();
             auto preview =
-                new wf::preview_indication_view_t({input.x, input.y, 1, 1});
+                new wf::preview_indication_view_t({input.x, input.y, 1, 1}, "move");
             wf::get_core().add_view(
                 std::unique_ptr<wf::view_interface_t>(preview));
             preview->set_output(output);
 
-            preview->set_target_geometry(query.out_geometry, 1);
+            preview->set_target_geometry(slot_geometry, 1);
             slot.preview = nonstd::make_observer(preview);
         }
 
@@ -537,7 +534,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
         // retain their fullscreen state (but they can be moved to other
         // workspaces). Unsetting the fullscreen state can break some
         // Xwayland games.
-        if (drag_helper->view->fullscreen)
+        if (drag_helper->view->pending_fullscreen())
         {
             return false;
         }

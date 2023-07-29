@@ -1,6 +1,7 @@
 #include "wayfire/nonstd/observer_ptr.h"
 #include "wayfire/object.hpp"
 #include "wayfire/output.hpp"
+#include "wayfire/toplevel-view.hpp"
 #include "wayfire/util.hpp"
 #include "wayfire/view-helpers.hpp"
 #include <sys/types.h>
@@ -14,6 +15,7 @@
 #include <wayfire/nonstd/wlroots-full.hpp>
 #include <wayfire/util/log.hpp>
 #include <wlr/util/edges.h>
+#include <wayfire/window-manager.hpp>
 
 #include <wayfire/plugins/common/shared-core-data.hpp>
 
@@ -44,14 +46,14 @@ std::string make_output_identifier(wf::output_t *output)
     return identifier;
 }
 
-void view_store_data(wayfire_view view, wf::output_t *output, int z_order)
+void view_store_data(wayfire_toplevel_view view, wf::output_t *output, int z_order)
 {
     auto view_data = view->get_data_safe<last_output_info_t>();
     view_data->output_identifier = make_output_identifier(output);
-    view_data->geometry    = view->get_wm_geometry();
-    view_data->fullscreen  = view->fullscreen;
+    view_data->geometry    = view->get_pending_geometry();
+    view_data->fullscreen  = view->pending_fullscreen();
     view_data->minimized   = view->minimized;
-    view_data->tiled_edges = view->tiled_edges;
+    view_data->tiled_edges = view->pending_tiled_edges();
     view_data->z_order     = z_order;
     if (view == output->get_active_view())
     {
@@ -59,7 +61,7 @@ void view_store_data(wayfire_view view, wf::output_t *output, int z_order)
     }
 }
 
-nonstd::observer_ptr<last_output_info_t> view_get_data(wayfire_view view)
+nonstd::observer_ptr<last_output_info_t> view_get_data(wayfire_toplevel_view view)
 {
     return view->get_data<last_output_info_t>();
 }
@@ -212,10 +214,10 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
         }
 
         // Make a list of views to move to this output
-        auto views = std::vector<wayfire_view>();
+        auto views = std::vector<wayfire_toplevel_view>();
         for (auto& view : wf::get_core().get_all_views())
         {
-            if (!view->is_mapped())
+            if (!view->is_mapped() || !toplevel_cast(view))
             {
                 continue;
             }
@@ -225,16 +227,16 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
                 continue;
             }
 
-            auto last_output_info = view_get_data(view);
+            auto last_output_info = view_get_data(toplevel_cast(view));
             if (last_output_info->output_identifier == identifier)
             {
-                views.push_back(view);
+                views.push_back(wf::toplevel_cast(view));
             }
         }
 
         // Sorts with the views closest to front last
         std::sort(views.begin(), views.end(),
-            [=] (wayfire_view & view1, wayfire_view & view2)
+            [=] (wayfire_toplevel_view & view1, wayfire_toplevel_view & view2)
         {
             return view_get_data(view1)->z_order > view_get_data(view2)->z_order;
         });
@@ -247,11 +249,11 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
                 view->get_title(), " to: ", output->to_string());
 
             move_view_to_output(view, output, false);
-            view->set_fullscreen(last_output_info->fullscreen);
+            view->toplevel()->pending().fullscreen = last_output_info->fullscreen;
             view->set_minimized(last_output_info->minimized);
             if (last_output_info->tiled_edges != 0)
             {
-                view->tile_request(last_output_info->tiled_edges);
+                wf::get_core().default_wm->tile_request(view, last_output_info->tiled_edges);
             }
 
             view->set_geometry(last_output_info->geometry);
@@ -281,7 +283,7 @@ class wayfire_preserve_output : public wf::per_output_plugin_instance_t
         auto view = signal_data->view;
 
         // Ignore event if geometry didn't actually change
-        if (signal_data->old_geometry == view->get_wm_geometry())
+        if (signal_data->old_geometry == view->get_geometry())
         {
             return;
         }
