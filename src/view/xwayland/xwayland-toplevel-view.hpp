@@ -14,6 +14,7 @@
 #include <wayfire/window-manager.hpp>
 #include "xwayland-toplevel.hpp"
 #include <wayfire/txn/transaction-manager.hpp>
+#include <wayfire/view-helpers.hpp>
 
 #if WF_HAS_XWAYLAND
 
@@ -21,7 +22,7 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
 {
     wf::wl_listener_wrapper on_request_move, on_request_resize,
         on_request_maximize, on_request_minimize, on_request_activate,
-        on_request_fullscreen, on_set_parent, on_set_hints;
+        on_request_fullscreen, on_set_hints, on_set_parent;
 
     wf::wl_listener_wrapper on_set_decorations;
 
@@ -181,37 +182,10 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
     wayfire_xwayland_view(wlr_xwayland_surface *xww) :
         wayfire_xwayland_view_base(xww)
     {
-        surface_root_node = std::make_shared<wf::toplevel_view_node_t>(this);
-        this->set_surface_root_node(surface_root_node);
-    }
-
-    void set_activated(bool active) override
-    {
-        if (xw)
-        {
-            wlr_xwayland_surface_activate(xw, active);
-        }
-
-        wf::toplevel_view_interface_t::set_activated(active);
-    }
-
-    virtual void initialize() override
-    {
-        LOGE("new xwayland surface ", xw->title,
-            " class: ", xw->class_t, " instance: ", xw->instance);
-
+        LOGE("new xwayland surface ", xw->title, " class: ", xw->class_t, " instance: ", xw->instance);
         this->toplevel = std::make_shared<wf::xw::xwayland_toplevel_t>(xw);
         toplevel->connect(&on_toplevel_applied);
         this->priv->toplevel = toplevel;
-
-        _initialize();
-        wf::view_interface_t::initialize();
-
-        // Set the output early, so that we can emit the signals on the output
-        if (!get_output())
-        {
-            set_output(wf::get_core().get_active_output());
-        }
 
         on_map.set_callback([&] (void*)
         {
@@ -269,21 +243,12 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
 
         on_set_parent.set_callback([&] (void*)
         {
-            /* Menus, etc. with TRANSIENT_FOR but not dialogs */
-            if (is_unmanaged())
-            {
-                recreate_view();
-
-                return;
-            }
-
             auto parent = xw->parent ? (wf::view_interface_t*)(xw->parent->data) : nullptr;
 
             // Make sure the parent is mapped, and that we are not a toplevel view
             if (parent)
             {
-                if (!parent->is_mapped() ||
-                    this->has_type(wf::xw::_NET_WM_WINDOW_TYPE_NORMAL))
+                if (!parent->is_mapped() || !wf::xw::has_type(xw, wf::xw::_NET_WM_WINDOW_TYPE_NORMAL))
                 {
                     parent = nullptr;
                 }
@@ -308,7 +273,6 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
         {
             update_decorated();
         });
-        update_decorated();
 
         on_map.connect(&xw->events.map);
         on_unmap.connect(&xw->events.unmap);
@@ -324,8 +288,32 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
         on_request_fullscreen.connect(&xw->events.request_fullscreen);
 
         xw->data = dynamic_cast<wf::view_interface_t*>(this);
+    }
+
+    static std::shared_ptr<wayfire_xwayland_view> create(wlr_xwayland_surface *surface)
+    {
+        auto self = wf::view_interface_t::create<wayfire_xwayland_view>(surface);
+        self->surface_root_node = std::make_shared<wf::toplevel_view_node_t>(self);
+        self->set_surface_root_node(self->surface_root_node);
+
+        // Set the output early, so that we can emit the signals on the output
+        self->set_output(wf::get_core().get_active_output());
+        self->_initialize();
+
+        self->update_decorated();
         // set initial parent
-        on_set_parent.emit(nullptr);
+        self->on_set_parent.emit(nullptr);
+        return self;
+    }
+
+    void set_activated(bool active) override
+    {
+        if (xw)
+        {
+            wlr_xwayland_surface_activate(xw, active);
+        }
+
+        wf::toplevel_view_interface_t::set_activated(active);
     }
 
     virtual void destroy() override
@@ -343,9 +331,6 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
         on_request_fullscreen.disconnect();
 
         wayfire_xwayland_view_base::destroy();
-
-        /* Drop the internal reference */
-        unref();
     }
 
     bool is_mapped() const override
@@ -360,7 +345,7 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
          * two cases we're dealing with by checking whether we have received
          * a valid ConfigureRequest before mapping */
         bool client_self_positioned = self_positioned;
-        emit_view_map_signal(self(), client_self_positioned);
+        wf::view_implementation::emit_view_map_signal(self(), client_self_positioned);
     }
 
     void map(wlr_surface *surface) override
@@ -481,7 +466,7 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
         }
 
         wf::scene::damage_node(get_root_node(), last_bounding_box);
-        wf::emit_toplevel_state_change_signals({this}, old_state);
+        wf::view_implementation::emit_toplevel_state_change_signals({this}, old_state);
 
         damage();
         last_bounding_box = this->get_surface_root_node()->get_bounding_box();
@@ -526,7 +511,7 @@ class wayfire_xwayland_view : public wf::toplevel_view_interface_t, public wayfi
     bool should_be_decorated() override
     {
         return role == wf::VIEW_ROLE_TOPLEVEL && !has_client_decoration &&
-               !has_type(wf::xw::_NET_WM_WINDOW_TYPE_SPLASH);
+               !wf::xw::has_type(xw, wf::xw::_NET_WM_WINDOW_TYPE_SPLASH);
     }
 
     void ping() override

@@ -9,6 +9,7 @@
 
 #include "surface-impl.hpp"
 #include "wayfire/core.hpp"
+#include "wayfire/nonstd/tracking-allocator.hpp"
 #include "wayfire/signal-provider.hpp"
 #include "wayfire/unstable/wlr-surface-node.hpp"
 #include "wayfire/output.hpp"
@@ -27,11 +28,7 @@ class view_interface_t::view_priv_impl
 {
   public:
     wlr_surface *wsurface = nullptr;
-
-    /** Reference count to the view */
-    int ref_cnt = 0;
-
-    size_t last_view_cnt = 0;
+    size_t last_view_cnt  = 0;
 
     bool keyboard_focus_enabled = true;
     uint32_t allowed_actions    = VIEW_ALLOW_ALL;
@@ -49,8 +46,8 @@ class view_interface_t::view_priv_impl
     void set_mapped_surface_contents(std::shared_ptr<scene::wlr_surface_node_t> content);
     void unset_mapped_surface_contents();
     std::weak_ptr<wf::workspace_set_t> current_wset;
-
     std::shared_ptr<toplevel_t> toplevel;
+    wf::signal::connection_t<destruct_signal<view_interface_t>> pre_free;
 };
 
 /**
@@ -59,18 +56,9 @@ class view_interface_t::view_priv_impl
 void adjust_geometry_for_gravity(wf::toplevel_state_t& desired_state, wf::dimensions_t actual_size);
 
 /** Emit the map signal for the given view */
-void emit_view_map_signal(wayfire_view view, bool has_position);
-void emit_ping_timeout_signal(wayfire_view view);
-void emit_geometry_changed_signal(wayfire_toplevel_view view, wf::geometry_t old_geometry);
-
-void emit_title_changed_signal(wayfire_view view);
-void emit_app_id_changed_signal(wayfire_view view);
-
 void init_xdg_shell();
 void init_xwayland();
 void init_layer_shell();
-void emit_toplevel_state_change_signals(
-    wayfire_toplevel_view view, const wf::toplevel_state_t& old_state);
 
 std::string xwayland_get_display();
 void xwayland_update_default_cursor();

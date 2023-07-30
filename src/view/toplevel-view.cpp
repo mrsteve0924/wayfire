@@ -260,17 +260,6 @@ bool wf::toplevel_view_interface_t::should_be_decorated()
     return false;
 }
 
-void wf::toplevel_view_interface_t::deinitialize()
-{
-    auto children = this->children;
-    for (auto ch : children)
-    {
-        ch->set_toplevel_parent(nullptr);
-    }
-
-    view_interface_t::deinitialize();
-}
-
 wf::toplevel_view_interface_t::~toplevel_view_interface_t()
 {
     /* Note: at this point, it is invalid to call most functions */
@@ -295,6 +284,12 @@ std::shared_ptr<wf::workspace_set_t> wf::toplevel_view_interface_t::get_wset()
 const std::shared_ptr<wf::toplevel_t>& wf::toplevel_view_interface_t::toplevel() const
 {
     return priv->toplevel;
+}
+
+void wf::toplevel_view_interface_t::set_toplevel(
+    std::shared_ptr<wf::toplevel_t> toplevel)
+{
+    priv->toplevel = toplevel;
 }
 
 wayfire_toplevel_view wf::find_view_for_toplevel(

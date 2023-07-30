@@ -17,7 +17,7 @@ namespace wf
 class xdg_toplevel_view_t : public wf::toplevel_view_interface_t
 {
   public:
-    xdg_toplevel_view_t(wlr_xdg_toplevel *tlvl);
+    static std::shared_ptr<xdg_toplevel_view_t> create(wlr_xdg_toplevel *toplevel);
 
     void request_native_size() override;
     void close() override;
@@ -29,11 +29,11 @@ class xdg_toplevel_view_t : public wf::toplevel_view_interface_t
     std::string get_title() override;
     bool should_be_decorated() override;
     bool is_mapped() const override;
-    void initialize() override;
-
     void set_decoration_mode(bool use_csd);
 
   private:
+    friend class wf::tracking_allocator_t<view_interface_t>;
+    xdg_toplevel_view_t(wlr_xdg_toplevel *tlvl);
     bool has_client_decoration = true;
     bool _is_mapped = false;
     wf::wl_listener_wrapper on_map, on_unmap, on_destroy, on_new_popup,
@@ -63,4 +63,6 @@ class xdg_toplevel_view_t : public wf::toplevel_view_interface_t
     void handle_app_id_changed(std::string new_app_id);
     void handle_toplevel_state_changed(toplevel_state_t old_state);
 };
+
+void default_handle_new_xdg_toplevel(wlr_xdg_toplevel *toplevel);
 }

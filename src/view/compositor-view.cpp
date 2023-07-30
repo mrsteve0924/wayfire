@@ -1,12 +1,15 @@
 #include "view/view-impl.hpp"
 #include "wayfire/geometry.hpp"
 #include "wayfire/scene-render.hpp"
+#include "wayfire/scene-operations.hpp"
+#include "wayfire/workspace-set.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/view.hpp"
 #include <wayfire/core.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/opengl.hpp>
 #include <wayfire/compositor-view.hpp>
+#include <wayfire/view-helpers.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <cstring>
 
@@ -28,15 +31,16 @@ class wf::color_rect_view_t::color_rect_node_t : public wf::scene::floating_inne
         using simple_render_instance_t::simple_render_instance_t;
         void render(const wf::render_target_t& target, const wf::region_t& region) override
         {
-            if (!self->view)
+            auto view = self->_view.lock();
+            if (!view)
             {
                 return;
             }
 
             auto geometry = self->get_bounding_box();
-            auto border   = self->view->border;
-            auto _border_color = self->view->_border_color;
-            auto _color = self->view->_color;
+            auto border   = view->border;
+            auto _border_color = view->_border_color;
+            auto _color = view->_color;
 
             OpenGL::render_begin(target);
             for (const auto& box : region)
@@ -67,17 +71,12 @@ class wf::color_rect_view_t::color_rect_node_t : public wf::scene::floating_inne
         }
     };
 
-    color_rect_view_t *view;
-    wf::signal::connection_t<view_destruct_signal> on_view_destroy = [=] (view_destruct_signal*)
-    {
-        view = nullptr;
-    };
+    std::weak_ptr<color_rect_view_t> _view;
 
   public:
-    color_rect_node_t(color_rect_view_t *view) : scene::floating_inner_node_t(false)
+    color_rect_node_t(std::weak_ptr<color_rect_view_t> view) : scene::floating_inner_node_t(false)
     {
-        this->view = view;
-        view->connect(&on_view_destroy);
+        _view = view;
     }
 
     void gen_render_instances(std::vector<scene::render_instance_uptr>& instances,
@@ -88,7 +87,7 @@ class wf::color_rect_view_t::color_rect_node_t : public wf::scene::floating_inne
 
     wf::geometry_t get_bounding_box() override
     {
-        if (view)
+        if (auto view = _view.lock())
         {
             return view->get_geometry();
         } else
@@ -101,19 +100,41 @@ class wf::color_rect_view_t::color_rect_node_t : public wf::scene::floating_inne
 /* Implementation of color_rect_view_t */
 wf::color_rect_view_t::color_rect_view_t() : wf::view_interface_t()
 {
-    set_surface_root_node(std::make_shared<color_rect_node_t>(this));
-    this->geometry   = {0, 0, 1, 1};
-    this->_color     = {0, 0, 0, 1};
-    this->border     = 0;
-    this->_is_mapped = true;
+    this->geometry = {0, 0, 1, 1};
+    this->_color   = {0, 0, 0, 1};
+    this->border   = 0;
+}
+
+std::shared_ptr<wf::color_rect_view_t> wf::color_rect_view_t::create(view_role_t role,
+    wf::output_t *start_output, std::optional<wf::scene::layer> layer)
+{
+    auto self = view_interface_t::create<wf::color_rect_view_t>();
+    self->set_surface_root_node(std::make_shared<color_rect_node_t>(self));
+    self->set_role(role);
+
+    self->_is_mapped = true;
+    self->get_root_node()->set_enabled(true);
+
+    if (start_output)
+    {
+        self->set_output(start_output);
+
+        if (layer)
+        {
+            auto parent = (layer == wf::scene::layer::WORKSPACE) ?
+                start_output->wset()->get_node() : start_output->node_for_layer(*layer);
+            wf::scene::readd_front(parent, self->get_root_node());
+        }
+    }
+
+    wf::view_implementation::emit_view_map_signal(self, true);
+    return self;
 }
 
 void wf::color_rect_view_t::close()
 {
     this->_is_mapped = false;
-
     emit_view_unmap();
-    unref();
 }
 
 void wf::color_rect_view_t::set_color(wf::color_t color)
@@ -159,10 +180,4 @@ wlr_surface*wf::color_rect_view_t::get_keyboard_focus_surface()
 bool wf::color_rect_view_t::is_focusable() const
 {
     return false;
-}
-
-void wf::color_rect_view_t::initialize()
-{
-    view_interface_t::initialize();
-    this->get_root_node()->set_enabled(true);
 }

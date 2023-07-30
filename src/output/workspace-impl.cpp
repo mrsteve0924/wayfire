@@ -17,6 +17,7 @@
 #include "../view/view-impl.hpp"
 #include "wayfire/debug.hpp"
 #include "wayfire/geometry.hpp"
+#include "wayfire/nonstd/tracking-allocator.hpp"
 #include "wayfire/option-wrapper.hpp"
 #include "wayfire/scene-input.hpp"
 #include "wayfire/scene.hpp"
@@ -179,17 +180,9 @@ class workspace_set_root_node_t : public wf::scene::floating_inner_node_t
     }
 };
 
-static std::map<uint64_t, workspace_set_t*> allocated_wsets;
-
-std::vector<workspace_set_t*> workspace_set_t::get_all()
+std::vector<nonstd::observer_ptr<workspace_set_t>> workspace_set_t::get_all()
 {
-    std::vector<workspace_set_t*> result;
-    for (auto& [_, set] : allocated_wsets)
-    {
-        result.push_back(set);
-    }
-
-    return result;
+    return tracking_allocator_t<workspace_set_t>::get().get_all();
 }
 
 struct workspace_set_t::impl
@@ -274,9 +267,10 @@ struct workspace_set_t::impl
         }
     };
 
-    wf::signal::connection_t<view_destruct_signal> on_view_destruct = [=] (view_destruct_signal *ev)
+    wf::signal::connection_t<wf::destruct_signal<view_interface_t>> on_view_destruct =
+        [=] (wf::destruct_signal<view_interface_t> *ev)
     {
-        remove_view(toplevel_cast(ev->view));
+        remove_view(toplevel_cast(ev->object));
     };
 
     bool visible = false;
@@ -287,23 +281,12 @@ struct workspace_set_t::impl
     grid_size_manager_t grid;
     scene::floating_inner_ptr wnode;
 
-    impl(workspace_set_t *self, int64_t hint_index) : grid(self)
+    impl(workspace_set_t *self, int64_t index) : grid(self)
     {
-        this->self = self;
+        this->self  = self;
+        this->index = index;
 
-        if ((hint_index <= 0) || allocated_wsets.count(hint_index))
-        {
-            // Select lowest unused ID.
-            for (index = 1; allocated_wsets.count(index); index++)
-            {}
-        } else
-        {
-            index = hint_index;
-        }
-
-        allocated_wsets[index] = self;
         LOGC(WSET, "Creating new workspace set with id=", index);
-
         wnode = std::make_shared<workspace_set_root_node_t>(index);
         wnode->set_enabled(false);
         self->connect(&on_grid_changed);
@@ -313,7 +296,6 @@ struct workspace_set_t::impl
     ~impl()
     {
         LOGC(WSET, "Destroying workspace set with id=", index);
-        allocated_wsets.erase(index);
         attach_to_output(nullptr, SELF_DESTROY);
         for (auto view : wset_views)
         {
@@ -794,5 +776,36 @@ void emit_view_moved_to_wset(wayfire_toplevel_view view,
     data.old_wset = old_wset;
     data.new_wset = new_wset;
     wf::get_core().emit(&data);
+}
+
+static int64_t choose_lowest_free_wset_id(int64_t hint_index)
+{
+    auto all_wsets = workspace_set_t::get_all();
+    std::set<int64_t> used_indices;
+    for (auto& wset : all_wsets)
+    {
+        used_indices.insert(wset->get_index());
+    }
+
+    int64_t index = 1;
+
+    if ((hint_index <= 0) || used_indices.count(hint_index))
+    {
+        // Select lowest unused ID.
+        for (index = 1; used_indices.count(index); index++)
+        {}
+    } else
+    {
+        index = hint_index;
+    }
+
+    return index;
+}
+
+std::shared_ptr<workspace_set_t> workspace_set_t::create(int64_t index)
+{
+    index = choose_lowest_free_wset_id(index);
+    auto wset = wf::tracking_allocator_t<workspace_set_t>::get().allocate<workspace_set_t>(index);
+    return wset;
 }
 } // namespace wf

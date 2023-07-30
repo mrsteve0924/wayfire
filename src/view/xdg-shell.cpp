@@ -16,8 +16,10 @@
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/unstable/wlr-view-events.hpp>
+#include <wayfire/nonstd/tracking-allocator.hpp>
 
 #include "xdg-shell/xdg-toplevel-view.hpp"
+#include <wayfire/view-helpers.hpp>
 #include "view-keyboard-interaction.hpp"
 
 class wayfire_xdg_popup_node : public wf::scene::translation_node_t
@@ -41,10 +43,6 @@ wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) : wf::view_interface_
     this->popup = popup;
     this->role  = wf::VIEW_ROLE_UNMANAGED;
     this->priv->keyboard_focus_enabled = false;
-    this->surface_root_node = std::make_shared<wayfire_xdg_popup_node>(this->get_id());
-    this->set_surface_root_node(surface_root_node);
-    this->set_output(popup_parent->get_output());
-
 
     if (!dynamic_cast<wayfire_xdg_popup*>(popup_parent.get()))
     {
@@ -62,16 +60,10 @@ wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) : wf::view_interface_
     }
 
     on_surface_commit.set_callback([&] (void*) { commit(); });
-}
-
-wayfire_xdg_popup::~wayfire_xdg_popup() = default;
-
-void wayfire_xdg_popup::initialize()
-{
-    wf::view_interface_t::initialize();
-    this->main_surface = std::make_shared<wf::scene::wlr_surface_node_t>(popup->base->surface, true);
 
     LOGI("New xdg popup");
+    this->main_surface = std::make_shared<wf::scene::wlr_surface_node_t>(popup->base->surface, true);
+
     on_map.set_callback([&] (void*) { map(); });
     on_unmap.set_callback([&] (void*) { unmap(); });
     on_destroy.set_callback([&] (void*) { destroy(); });
@@ -81,7 +73,7 @@ void wayfire_xdg_popup::initialize()
     });
     on_ping_timeout.set_callback([&] (void*)
     {
-        wf::emit_ping_timeout_signal(self());
+        wf::view_implementation::emit_ping_timeout_signal(self());
     });
 
     on_map.connect(&popup->base->events.map);
@@ -107,8 +99,19 @@ void wayfire_xdg_popup::initialize()
     popup_parent->connect(&this->parent_geometry_changed);
     popup_parent->connect(&this->parent_app_id_changed);
     popup_parent->connect(&this->parent_title_changed);
+}
 
-    unconstrain();
+wayfire_xdg_popup::~wayfire_xdg_popup() = default;
+
+std::shared_ptr<wayfire_xdg_popup> wayfire_xdg_popup::create(wlr_xdg_popup *popup)
+{
+    auto self = wf::view_interface_t::create<wayfire_xdg_popup>(popup);
+
+    self->surface_root_node = std::make_shared<wayfire_xdg_popup_node>(self->get_id());
+    self->set_surface_root_node(self->surface_root_node);
+    self->set_output(self->popup_parent->get_output());
+    self->unconstrain();
+    return self;
 }
 
 void wayfire_xdg_popup::map()
@@ -220,8 +223,6 @@ void wayfire_xdg_popup::destroy()
     on_destroy.disconnect();
     on_new_popup.disconnect();
     on_ping_timeout.disconnect();
-    /* Drop the internal reference */
-    unref();
 }
 
 void wayfire_xdg_popup::close()
@@ -272,13 +273,13 @@ bool wayfire_xdg_popup::is_mapped() const
 void wayfire_xdg_popup::handle_app_id_changed(std::string new_app_id)
 {
     this->app_id = new_app_id;
-    wf::emit_app_id_changed_signal(self());
+    wf::view_implementation::emit_app_id_changed_signal(self());
 }
 
 void wayfire_xdg_popup::handle_title_changed(std::string new_title)
 {
     this->title = new_title;
-    wf::emit_title_changed_signal(self());
+    wf::view_implementation::emit_title_changed_signal(self());
 }
 
 std::string wayfire_xdg_popup::get_app_id()
@@ -312,6 +313,26 @@ wlr_surface*wayfire_xdg_popup::get_keyboard_focus_surface()
     return nullptr;
 }
 
+/**
+ * A class which manages the xdg_popup_view for the duration of the wlr_xdg_popup object lifetime.
+ */
+class xdg_popup_controller_t
+{
+    std::shared_ptr<wayfire_xdg_popup> view;
+    wf::wl_listener_wrapper on_destroy;
+
+  public:
+    xdg_popup_controller_t(wlr_xdg_popup *popup)
+    {
+        on_destroy.set_callback([=] (auto) { delete this; });
+        on_destroy.connect(&popup->base->events.destroy);
+        view = wayfire_xdg_popup::create(popup);
+    }
+
+    ~xdg_popup_controller_t()
+    {}
+};
+
 void create_xdg_popup(wlr_xdg_popup *popup)
 {
     if (!wf::wl_surface_to_wayfire_view(popup->parent->resource))
@@ -320,7 +341,8 @@ void create_xdg_popup(wlr_xdg_popup *popup)
         return;
     }
 
-    wf::get_core().add_view(std::make_unique<wayfire_xdg_popup>(popup));
+    // Will be freed by the destroy handler
+    new xdg_popup_controller_t{popup};
 }
 
 static wlr_xdg_shell *xdg_handle = nullptr;
@@ -340,7 +362,7 @@ void wf::init_xdg_shell()
             wf::get_core().emit(&new_xdg_surf);
             if (new_xdg_surf.use_default_implementation && (surf->role == WLR_XDG_SURFACE_ROLE_TOPLEVEL))
             {
-                wf::get_core().add_view(std::make_unique<wf::xdg_toplevel_view_t>(surf->toplevel));
+                default_handle_new_xdg_toplevel(surf->toplevel);
             }
         });
         on_xdg_created.connect(&xdg_handle->events.new_surface);

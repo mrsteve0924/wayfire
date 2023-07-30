@@ -9,10 +9,14 @@
 #include "../xdg-shell.hpp"
 #include "wayfire/debug.hpp"
 #include "wayfire/geometry.hpp"
+#include "wayfire/nonstd/tracking-allocator.hpp"
+#include "wayfire/util.hpp"
+#include "wayfire/view.hpp"
 #include <wayfire/output-layout.hpp>
 #include <wayfire/workspace-set.hpp>
 #include <wlr/util/edges.h>
 #include <wayfire/window-manager.hpp>
+#include <wayfire/view-helpers.hpp>
 
 /**
  * When we get a request for setting CSD, the view might not have been
@@ -24,17 +28,17 @@ std::unordered_map<wlr_surface*, uint32_t> uses_csd;
 wf::xdg_toplevel_view_t::xdg_toplevel_view_t(wlr_xdg_toplevel *tlvl)
 {
     this->xdg_toplevel = tlvl;
+    LOGI("new xdg_shell_stable surface: ", xdg_toplevel->title, " app-id: ", xdg_toplevel->app_id);
+
     this->main_surface = std::make_shared<scene::wlr_surface_node_t>(tlvl->base->surface, false);
-    surface_root_node  = std::make_shared<toplevel_view_node_t>(this);
-    this->set_surface_root_node(surface_root_node);
+    this->wtoplevel    = std::make_shared<xdg_toplevel_t>(tlvl, this->main_surface);
+    this->wtoplevel->connect(&this->on_toplevel_applied);
+    this->priv->toplevel = this->wtoplevel;
 
     this->on_toplevel_applied = [&] (xdg_toplevel_applied_state_signal *ev)
     {
         this->handle_toplevel_state_changed(ev->old_state);
     };
-    wtoplevel = std::make_shared<xdg_toplevel_t>(tlvl, main_surface);
-    wtoplevel->connect(&on_toplevel_applied);
-    this->priv->toplevel = wtoplevel;
 
     on_map.set_callback([&] (void*)
     {
@@ -87,7 +91,7 @@ wf::xdg_toplevel_view_t::xdg_toplevel_view_t(wlr_xdg_toplevel *tlvl)
     });
     on_ping_timeout.set_callback([&] (void*)
     {
-        wf::emit_ping_timeout_signal(self());
+        wf::view_implementation::emit_ping_timeout_signal(self());
     });
 
     on_request_move.set_callback([&] (void*)
@@ -132,6 +136,34 @@ wf::xdg_toplevel_view_t::xdg_toplevel_view_t(wlr_xdg_toplevel *tlvl)
     on_request_fullscreen.connect(&xdg_toplevel->events.request_fullscreen);
 
     xdg_toplevel->base->data = dynamic_cast<view_interface_t*>(this);
+}
+
+std::shared_ptr<wf::xdg_toplevel_view_t> wf::xdg_toplevel_view_t::create(wlr_xdg_toplevel *toplevel)
+{
+    auto self = view_interface_t::create<xdg_toplevel_view_t>(toplevel);
+
+    self->surface_root_node = std::make_shared<toplevel_view_node_t>(self);
+    self->set_surface_root_node(self->surface_root_node);
+
+    // Set the output early, so that we can emit the signals on the output
+    self->set_output(wf::get_core().get_active_output());
+
+    self->handle_title_changed(nonull(toplevel->title));
+    self->handle_app_id_changed(nonull(toplevel->app_id));
+    // set initial parent
+    self->on_set_parent.emit(nullptr);
+
+    if (toplevel->requested.fullscreen)
+    {
+        wf::get_core().default_wm->fullscreen_request(self, self->get_output(), true);
+    }
+
+    if (toplevel->requested.maximized)
+    {
+        wf::get_core().default_wm->tile_request(self, TILED_EDGES_ALL);
+    }
+
+    return self;
 }
 
 void wf::xdg_toplevel_view_t::request_native_size()
@@ -197,36 +229,6 @@ bool wf::xdg_toplevel_view_t::is_mapped() const
     return wtoplevel->current().mapped && priv->wsurface;
 }
 
-void wf::xdg_toplevel_view_t::initialize()
-{
-    view_interface_t::initialize();
-
-    // Set the output early, so that we can emit the signals on the output
-    if (!get_output())
-    {
-        set_output(wf::get_core().get_active_output());
-    }
-
-    LOGI("new xdg_shell_stable surface: ", xdg_toplevel->title,
-        " app-id: ", xdg_toplevel->app_id);
-
-    handle_title_changed(nonull(xdg_toplevel->title));
-    handle_app_id_changed(nonull(xdg_toplevel->app_id));
-
-    // set initial parent
-    on_set_parent.emit(nullptr);
-
-    if (xdg_toplevel->requested.fullscreen)
-    {
-        wf::get_core().default_wm->fullscreen_request({this}, get_output(), true);
-    }
-
-    if (xdg_toplevel->requested.maximized)
-    {
-        wf::get_core().default_wm->tile_request({this}, TILED_EDGES_ALL);
-    }
-}
-
 void wf::xdg_toplevel_view_t::map()
 {
     auto surf = xdg_toplevel->base->surface;
@@ -275,7 +277,7 @@ void wf::xdg_toplevel_view_t::handle_toplevel_state_changed(wf::toplevel_state_t
     }
 
     wf::scene::damage_node(get_root_node(), last_bounding_box);
-    emit_toplevel_state_change_signals({this}, old_state);
+    wf::view_implementation::emit_toplevel_state_change_signals({this}, old_state);
 
     damage();
     last_bounding_box = this->get_surface_root_node()->get_bounding_box();
@@ -298,22 +300,19 @@ void wf::xdg_toplevel_view_t::destroy()
     on_request_minimize.disconnect();
     on_show_window_menu.disconnect();
     on_request_fullscreen.disconnect();
-
     xdg_toplevel = nullptr;
-    /* Drop the internal reference */
-    unref();
 }
 
 void wf::xdg_toplevel_view_t::handle_title_changed(std::string new_title)
 {
     this->title = new_title;
-    emit_title_changed_signal(self());
+    wf::view_implementation::emit_title_changed_signal(self());
 }
 
 void wf::xdg_toplevel_view_t::handle_app_id_changed(std::string new_app_id)
 {
     this->app_id = new_app_id;
-    emit_app_id_changed_signal(self());
+    wf::view_implementation::emit_app_id_changed_signal(self());
 }
 
 void wf::xdg_toplevel_view_t::set_decoration_mode(bool use_csd)
@@ -459,4 +458,30 @@ void wf::init_xdg_decoration_handlers()
 {
     init_legacy_decoration();
     init_xdg_decoration();
+}
+
+/**
+ * A class which manages the xdg_toplevel_view for the duration of the wlr_xdg_toplevel object lifetime.
+ */
+class xdg_toplevel_controller_t
+{
+    std::shared_ptr<wf::xdg_toplevel_view_t> view;
+    wf::wl_listener_wrapper on_destroy;
+
+  public:
+    xdg_toplevel_controller_t(wlr_xdg_toplevel *toplevel)
+    {
+        on_destroy.set_callback([=] (auto) { delete this; });
+        on_destroy.connect(&toplevel->base->events.destroy);
+        view = wf::xdg_toplevel_view_t::create(toplevel);
+    }
+
+    ~xdg_toplevel_controller_t()
+    {}
+};
+
+void wf::default_handle_new_xdg_toplevel(wlr_xdg_toplevel *toplevel)
+{
+    // Will be deleted by the destroy handler
+    new xdg_toplevel_controller_t(toplevel);
 }
