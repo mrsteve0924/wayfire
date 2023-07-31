@@ -191,7 +191,8 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
             return;
         }
 
-        handle_input_press(position.x, position.y, WLR_BUTTON_PRESSED);
+        auto og = output->get_layout_geometry();
+        handle_input_press(position.x - og.x, position.y - og.y, WLR_BUTTON_PRESSED);
     }
 
     void handle_touch_up(uint32_t time_ms, int finger_id, wf::pointf_t lift_off_position) override
@@ -290,7 +291,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         start_zoom(true);
 
         wall->start_output_renderer();
-        output->render->add_effect(&post_frame, wf::OUTPUT_EFFECT_POST);
+        output->render->add_effect(&pre_frame, wf::OUTPUT_EFFECT_PRE);
         output->render->schedule_redraw();
 
         auto cws = output->wset()->get_current_workspace();
@@ -366,9 +367,14 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
     }
 
     wf::point_t input_grab_origin;
+    /**
+     * Handle an input press event.
+     *
+     * @param x, y The position of the event in output-local coordinates.
+     */
     void handle_input_press(int32_t x, int32_t y, uint32_t state)
     {
-        if (zoom_animation.running())
+        if (zoom_animation.running() || !this->state.active)
         {
             return;
         }
@@ -627,21 +633,38 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
 
         for (int i = int(wf::scene::layer::ALL_LAYERS) - 1; i >= 0; i--)
         {
-            auto isec = output->node_for_layer((wf::scene::layer)i)->find_node_at(localf);
-            auto node = isec ? isec->node.get() : nullptr;
-
-            if (auto view = wf::toplevel_cast(wf::node_to_view(node)))
+            auto output_root = output->node_for_layer((wf::scene::layer)i);
+            if (!output_root->is_enabled())
             {
-                auto all_views = output->wset()->get_views();
-                if (std::find(all_views.begin(), all_views.end(), view) != all_views.end())
-                {
-                    return view;
-                }
+                continue;
             }
 
-            if (node)
+            // We start the search directly from the output node's children. This is because the output nodes
+            // usually reject all queries outside of their current visible geometry, but we want to be able to
+            // query views from all workspaces, not just the current (and the only visible) one.
+            for (auto& ch : output_root->get_children())
             {
-                return nullptr;
+                if (!ch->is_enabled())
+                {
+                    continue;
+                }
+
+                auto isec = ch->find_node_at(localf);
+                auto node = isec ? isec->node.get() : nullptr;
+
+                if (auto view = wf::toplevel_cast(wf::node_to_view(node)))
+                {
+                    auto all_views = output->wset()->get_views();
+                    if (std::find(all_views.begin(), all_views.end(), view) != all_views.end())
+                    {
+                        return view;
+                    }
+                }
+
+                if (node)
+                {
+                    return nullptr;
+                }
             }
         }
 
@@ -670,7 +693,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         }
     }
 
-    wf::effect_hook_t post_frame = [=] ()
+    wf::effect_hook_t pre_frame = [=] ()
     {
         if (zoom_animation.running())
         {
@@ -743,7 +766,7 @@ class wayfire_expo : public wf::per_output_plugin_instance_t, public wf::keyboar
         output->deactivate_plugin(&grab_interface);
         input_grab->ungrab_input();
         wall->stop_output_renderer(true);
-        output->render->rem_effect(&post_frame);
+        output->render->rem_effect(&pre_frame);
         key_repeat.disconnect();
         key_pressed = 0;
     }

@@ -183,14 +183,8 @@ class blur_render_instance_t : public transformer_render_instance_t<blur_node_t>
         if (!damage.empty())
         {
             auto translucent_damage = calculate_translucent_damage(target, damage);
-            self->provider()->pre_render(bounding_box, translucent_damage, target);
-            auto reg = target.framebuffer_region_from_geometry_region(damage);
-
-            for (const auto& rect : reg)
-            {
-                auto damage_box = wlr_box_from_pixman_box(rect);
-                self->provider()->render(tex, bounding_box, damage_box, target);
-            }
+            self->provider()->prepare_blur(target, translucent_damage);
+            self->provider()->render(tex, bounding_box, damage, target, target);
         }
 
         OpenGL::render_begin(target);
