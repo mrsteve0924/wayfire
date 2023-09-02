@@ -44,8 +44,6 @@ class view_interface_t::view_priv_impl
 
     scene::node_ptr current_content;
     scene::node_ptr dummy_node;
-
-    std::unique_ptr<wlr_surface_controller_t> surface_controller;
     scene::floating_inner_ptr surface_root_node;
     wf::output_t *output;
 
@@ -73,6 +71,7 @@ void xwayland_update_default_cursor();
 
 /* Ensure that the given surface is on top of the Xwayland stack order. */
 void xwayland_bring_to_front(wlr_surface *surface);
+int xwayland_get_pid();
 
 void init_desktop_apis();
 void init_xdg_decoration_handlers();

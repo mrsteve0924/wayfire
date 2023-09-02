@@ -36,7 +36,6 @@ class wayfire_layer_shell_view : public wf::view_interface_t
     wf::wl_listener_wrapper on_surface_commit;
     std::shared_ptr<wf::scene::wlr_surface_node_t> main_surface;
     std::shared_ptr<wf::layer_shell_node_t> surface_root_node;
-    std::unique_ptr<wf::wlr_surface_controller_t> surface_controller;
 
     /**
      * The bounding box of the view the last time it was rendered.
@@ -97,9 +96,14 @@ class wayfire_layer_shell_view : public wf::view_interface_t
     /* Functions which are further specialized for the different shells */
     void move(int x, int y)
     {
+        wf::region_t damage = last_bounding_box;
         surface_root_node->set_offset({x, y});
         this->geometry.x = x;
         this->geometry.y = y;
+
+        last_bounding_box = get_bounding_box();
+        damage |= last_bounding_box;
+        wf::scene::damage_node(get_root_node(), last_bounding_box);
     }
 
     wlr_surface *get_keyboard_focus_surface() override

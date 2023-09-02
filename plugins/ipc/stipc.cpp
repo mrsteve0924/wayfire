@@ -9,9 +9,8 @@
 #include <wayfire/output.hpp>
 #include <wayfire/workspace-set.hpp>
 #include <wayfire/output-layout.hpp>
-#include <getopt.h>
-#include <wayland-server-core.h>
-#include <wayland-server-protocol.h>
+#include <wayfire/txn/transaction-manager.hpp>
+#include "src/view/view-impl.hpp"
 
 #define WAYFIRE_PLUGIN
 #include <wayfire/debug.hpp>
@@ -344,6 +343,9 @@ class stipc_plugin_t : public wf::plugin_interface_t
         method_repository->register_method("stipc/tablet/tool_axis", do_tool_axis);
         method_repository->register_method("stipc/tablet/tool_tip", do_tool_tip);
         method_repository->register_method("stipc/tablet/pad_button", do_pad_button);
+        method_repository->register_method("stipc/delay_next_tx", delay_next_tx);
+        method_repository->register_method("stipc/get_xwayland_pid", get_xwayland_pid);
+        method_repository->register_method("stipc/get_xwayland_display", get_xwayland_display);
     }
 
     bool is_unloadable() override
@@ -380,7 +382,8 @@ class stipc_plugin_t : public wf::plugin_interface_t
             v["title"]  = view->get_title();
             v["app-id"] = view->get_app_id();
             v["base-geometry"] = wf::ipc::geometry_to_json(get_view_base_geometry(view));
-            v["state"] = {};
+            v["state"]  = {};
+            v["output"] = view->get_output() ? view->get_output()->to_string() : "null";
 
             if (auto toplevel = toplevel_cast(view))
             {
@@ -388,6 +391,7 @@ class stipc_plugin_t : public wf::plugin_interface_t
                 v["state"]["tiled"] = toplevel->pending_tiled_edges();
                 v["state"]["fullscreen"] = toplevel->pending_fullscreen();
                 v["state"]["minimized"]  = toplevel->minimized;
+                v["state"]["activated"]  = toplevel->activated;
             } else
             {
                 v["geometry"] = wf::ipc::geometry_to_json(view->get_bounding_box());
@@ -674,6 +678,48 @@ class stipc_plugin_t : public wf::plugin_interface_t
         WFJSON_EXPECT_FIELD(data, "state", boolean);
         input->do_tablet_pad_button(data["button"], data["state"]);
         return wf::ipc::json_ok();
+    };
+
+    class never_ready_object : public wf::txn::transaction_object_t
+    {
+      public:
+        void commit() override
+        {}
+
+        void apply() override
+        {}
+
+        std::string stringify() const override
+        {
+            return "force-timeout";
+        }
+    };
+
+    wf::signal::connection_t<wf::txn::new_transaction_signal> on_new_tx =
+        [=] (wf::txn::new_transaction_signal *ev)
+    {
+        ev->tx->add_object(std::make_shared<never_ready_object>());
+        on_new_tx.disconnect();
+    };
+
+    ipc::method_callback delay_next_tx = [=] (nlohmann::json)
+    {
+        wf::get_core().tx_manager->connect(&on_new_tx);
+        return wf::ipc::json_ok();
+    };
+
+    ipc::method_callback get_xwayland_pid = [=] (nlohmann::json)
+    {
+        auto response = wf::ipc::json_ok();
+        response["pid"] = wf::xwayland_get_pid();
+        return response;
+    };
+
+    ipc::method_callback get_xwayland_display = [=] (nlohmann::json)
+    {
+        auto response = wf::ipc::json_ok();
+        response["display"] = wf::xwayland_get_display();
+        return response;
     };
 
     std::unique_ptr<headless_input_backend_t> input;
