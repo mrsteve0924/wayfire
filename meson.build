@@ -31,17 +31,42 @@ pixman         = dependency('pixman-1')
 threads        = dependency('threads')
 xkbcommon      = dependency('xkbcommon')
 libdl          = meson.get_compiler('cpp').find_library('dl')
-wlroots        = dependency('wlroots', version: ['>=0.16.0', '<0.17.0'], required: get_option('use_system_wlroots'))
-wfconfig       = dependency('wf-config', version: ['>=0.8.0', '<0.9.0'], required: get_option('use_system_wfconfig'))
 
-use_system_wlroots = not get_option('use_system_wlroots').disabled() and wlroots.found()
-if not use_system_wlroots
-  wlroots = subproject('wlroots', default_options : ['examples=false']).get_variable('wlroots')
+# We're not to use system wlroots: So we'll use the subproject
+if get_option('use_system_wlroots').disabled()
+	use_system_wlroots = false
+	wlroots = subproject('wlroots', default_options : ['examples=false']).get_variable('wlroots')
+
+elif get_option('use_system_wlroots').enabled()
+	use_system_wlroots = true
+	wlroots = dependency('wlroots', version: ['>=0.16.0', '<0.17.0'], required: true)
+
+elif get_option('use_system_wlroots').auto()
+	message( 'SEARCHING FOR WLROOTS' )
+	wlroots = dependency('wlroots', version: ['>=0.16.0', '<0.17.0'], required: false)
+	use_system_wlroots = true
+	if not wlroots.found()
+		use_system_wlroots = false
+		wlroots = subproject('wlroots', default_options : ['examples=false']).get_variable('wlroots')
+	endif
 endif
 
-use_system_wfconfig = not get_option('use_system_wfconfig').disabled() and wfconfig.found()
-if not use_system_wfconfig
-  wfconfig = subproject('wf-config').get_variable('wfconfig')
+# We're not to use system wlroots: So we'll use the subproject
+if get_option('use_system_wfconfig').disabled()
+	use_system_wfconfig = false
+	wfconfig = subproject('wf-config').get_variable('wfconfig')
+
+elif get_option('use_system_wfconfig').enabled()
+	use_system_wfconfig = true
+	wfconfig = dependency('wf-config', version: ['>=0.8.0', '<0.9.0'], required: true)
+
+elif get_option('use_system_wfconfig').auto()
+	wfconfig = dependency('wf-config', version: ['>=0.8.0', '<0.9.0'], required: false)
+	use_system_wfconfig = true
+	if not wfconfig.found()
+		use_system_wfconfig = false
+		wfconfig = subproject('wf-config').get_variable('wfconfig')
+	endif
 endif
 
 wfutils = subproject('wf-utils').get_variable('wfutils')
