@@ -68,6 +68,7 @@ struct view_scale_data
     };
 
     view_visibility_t visibility = view_visibility_t::VISIBLE;
+    bool was_minimized = false; /* flag to indicate if this view was originally minimized */
 };
 
 /**
@@ -108,7 +109,9 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     wf::option_wrapper_t<int> spacing{"scale/spacing"};
     wf::option_wrapper_t<bool> middle_click_close{"scale/middle_click_close"};
     wf::option_wrapper_t<double> inactive_alpha{"scale/inactive_alpha"};
+    wf::option_wrapper_t<double> minimized_alpha{"scale/minimized_alpha"};
     wf::option_wrapper_t<bool> allow_scale_zoom{"scale/allow_zoom"};
+    wf::option_wrapper_t<bool> include_minimized{"scale/include_minimized"};
 
     /* maximum scale -- 1.0 means we will not "zoom in" on a view */
     const double max_scale_factor = 1.0;
@@ -198,6 +201,15 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         scale_data[view].transformer = tr;
         view->get_transformed_node()->add_transformer(tr, wf::TRANSFORMER_2D,
             "scale");
+        /* Handle potentially minimized views by making them visible,
+         * however, they start out as fully transparent. */
+        if (view->minimized)
+        {
+            tr->alpha = 0.0;
+            wf::scene::set_node_enabled(view->get_root_node(), true);
+            scale_data[view].was_minimized = true;
+        }
+
         /* Transformers are added only once when scale is activated so
          * this is a good place to connect the geometry-changed handler */
         view->connect(&view_geometry_changed);
@@ -231,6 +243,11 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             for (auto& toplevel : e.first->enumerate_views(false))
             {
                 pop_transformer(toplevel);
+            }
+
+            if (e.second.was_minimized)
+            {
+                wf::scene::set_node_enabled(e.first->get_root_node(), false);
             }
 
             if (e.second.visibility == view_scale_data::view_visibility_t::HIDDEN)
@@ -379,7 +396,8 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             }
 
             auto alpha = scale_data[v].transformer->alpha;
-            scale_data[v].fade_animation.animate(alpha, (double)inactive_alpha);
+            double target_alpha = (v->minimized) ? minimized_alpha : inactive_alpha;
+            scale_data[v].fade_animation.animate(alpha, target_alpha);
         }
     }
 
@@ -400,7 +418,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     {
         if (view == current_focus_view)
         {
-            current_focus_view = toplevel_cast(output->get_active_view());
+            current_focus_view = toplevel_cast(wf::get_active_view_for_output(output));
         }
 
         if (view == initial_focus_view)
@@ -415,6 +433,11 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         if (!view)
         {
             return;
+        }
+
+        if (scale_data.at(view).was_minimized)
+        {
+            wf::scene::set_node_enabled(view->get_root_node(), false);
         }
 
         for (auto v : view->enumerate_views(false))
@@ -475,9 +498,6 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             // End scale
             initial_focus_view = nullptr;
             deactivate();
-            select_view(view);
-
-            output->focus_view(view, false);
             break;
 
           case BTN_MIDDLE:
@@ -564,7 +584,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
 
     void handle_keyboard_key(wf::seat_t*, wlr_keyboard_key_event ev) override
     {
-        auto view = toplevel_cast(output->get_active_view());
+        auto view = toplevel_cast(wf::get_active_view_for_output(output));
         if (!view)
         {
             view = current_focus_view;
@@ -572,7 +592,8 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             {
                 fade_out_all_except(view);
                 fade_in(view);
-                output->focus_view(view, true);
+
+                wf::get_core().default_wm->focus_raise_view(view);
                 return;
             }
         } else if (!scale_data.count(view))
@@ -612,14 +633,14 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
           case KEY_ENTER:
             deactivate();
             select_view(current_focus_view);
-            output->focus_view(current_focus_view, true);
+            wf::get_core().default_wm->focus_raise_view(view);
 
             return;
 
           case KEY_ESC:
             deactivate();
             output->wset()->request_workspace(initial_workspace);
-            output->focus_view(initial_focus_view, true);
+            wf::get_core().default_wm->focus_raise_view(initial_focus_view);
             initial_focus_view = nullptr;
 
             return;
@@ -659,8 +680,12 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         view = find_view_in_grid(next_row, next_col);
         if (view && (current_focus_view != view))
         {
-            // view_focused handler will update the view state
-            output->focus_view(view, false);
+            fade_out_all_except(view);
+            fade_in(view);
+            current_focus_view = view;
+
+            // Update activated state
+            wf::get_core().seat->focus_view(view);
         }
     }
 
@@ -679,7 +704,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             if (view_data.fade_animation.running() ||
                 view_data.animation.scale_animation.running())
             {
-                view->damage();
+                view->get_transformed_node()->begin_transform_update();
                 view_data.transformer->scale_x =
                     view_data.animation.scale_animation.scale_x;
                 view_data.transformer->scale_y =
@@ -699,7 +724,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
                     wf::scene::set_node_enabled(view->get_transformed_node(), false);
                 }
 
-                view->damage();
+                view->get_transformed_node()->end_transform_update();
             }
         }
     }
@@ -707,7 +732,8 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     /* Returns a list of views for all workspaces */
     std::vector<wayfire_toplevel_view> get_all_workspace_views()
     {
-        return output->wset()->get_views(wf::WSET_EXCLUDE_MINIMIZED | wf::WSET_MAPPED_ONLY);
+        return output->wset()->get_views(
+            (include_minimized ? 0 : wf::WSET_EXCLUDE_MINIMIZED) | wf::WSET_MAPPED_ONLY);
     }
 
     /* Returns a list of views for the current workspace */
@@ -860,11 +886,18 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         {
             std::sort(views.begin(), views.end(), [=] (wayfire_toplevel_view a, wayfire_toplevel_view b)
             {
+                if (a->minimized != b->minimized)
+                {
+                    /* avoid focusing minimized views if possible, so
+                     * sort them after non-minimized ones */
+                    return b->minimized;
+                }
+
                 return wf::get_focus_timestamp(a) > wf::get_focus_timestamp(b);
             });
 
             current_focus_view = views.empty() ? nullptr : views.front();
-            output->focus_view(current_focus_view, true);
+            wf::get_core().default_wm->focus_raise_view(current_focus_view);
         }
     }
 
@@ -922,8 +955,11 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
                 }
 
                 // Calculate target alpha for this view and its children
-                double target_alpha =
-                    (view == current_focus_view) ? 1 : (double)inactive_alpha;
+                double target_alpha = 1.0;
+                if (view != current_focus_view)
+                {
+                    target_alpha = (view->minimized) ? minimized_alpha : inactive_alpha;
+                }
 
                 // Helper function to calculate the desired scale for a view
                 const auto& calculate_scale = [=] (wf::dimensions_t vg)
@@ -1082,15 +1118,31 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     {
         if (scale_data.count(get_top_parent(view)) != 0)
         {
-            remove_view(view);
-            if (scale_data.empty())
+            /* Note: this signal can be emitted both when a view is removed from an output
+             * (closed or moved to another output) and when it is minimized. We use
+             * should_scale_view() to distinguish between the two cases. This only matters
+             * if we show minimized views. */
+            if (include_minimized && view->minimized && should_scale_view(view))
             {
-                finalize();
-            }
+                if (!scale_data.at(view).was_minimized)
+                {
+                    scale_data.at(view).was_minimized = true;
+                    wf::scene::set_node_enabled(view->get_root_node(), true);
+                }
 
-            if (!view->parent)
+                fade_out(view);
+            } else
             {
-                layout_slots(get_views());
+                remove_view(view);
+                if (scale_data.empty())
+                {
+                    finalize();
+                }
+
+                if (!view->parent)
+                {
+                    layout_slots(get_views());
+                }
             }
         }
     }
@@ -1111,7 +1163,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     {
         if (current_focus_view)
         {
-            output->focus_view(current_focus_view, true);
+            wf::get_core().default_wm->focus_raise_view(current_focus_view);
         }
 
         layout_slots(get_views());
@@ -1151,20 +1203,12 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         }
     };
 
-    /* View focused. This handler makes sure our view remains focused */
-    wf::signal::connection_t<wf::focus_view_signal> view_focused = [=] (wf::focus_view_signal *ev)
-    {
-        fade_out_all_except(toplevel_cast(ev->view));
-        fade_in(toplevel_cast(ev->view));
-        current_focus_view = toplevel_cast(ev->view);
-    };
-
     /* Our own refocus that uses untransformed coordinates */
     void refocus()
     {
         if (current_focus_view)
         {
-            output->focus_view(current_focus_view, true);
+            wf::get_core().default_wm->focus_raise_view(current_focus_view);
             select_view(current_focus_view);
 
             return;
@@ -1183,7 +1227,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             }
         }
 
-        output->focus_view(next_focus, true);
+        wf::get_core().default_wm->focus_raise_view(current_focus_view);
     }
 
     /* Returns true if any scale animation is running */
@@ -1289,16 +1333,16 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         }
 
         initial_workspace  = output->wset()->get_current_workspace();
-        initial_focus_view = toplevel_cast(output->get_active_view());
+        initial_focus_view = toplevel_cast(wf::get_active_view_for_output(output));
         current_focus_view = initial_focus_view ?: views.front();
         // Make sure no leftover events from the activation binding
         // trigger an action in scale
         last_selected_view = nullptr;
 
         grab->grab_input(wf::scene::layer::OVERLAY);
-        if (current_focus_view != output->get_active_view())
+        if (current_focus_view != wf::get_core().seat->get_active_view())
         {
-            output->focus_view(current_focus_view, true);
+            wf::get_core().default_wm->focus_raise_view(current_focus_view);
         }
 
         active = true;
@@ -1311,7 +1355,6 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         output->connect(&view_disappeared);
         output->connect(&view_minimized);
         output->connect(&view_unmapped);
-        output->connect(&view_focused);
 
         fade_out_all_except(current_focus_view);
         fade_in(current_focus_view);
@@ -1325,7 +1368,6 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         active = false;
 
         set_hook();
-        view_focused.disconnect();
         on_view_mapped.disconnect();
         on_view_set_output.disconnect();
         view_unmapped.disconnect();
@@ -1338,14 +1380,22 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
 
         for (auto& e : scale_data)
         {
-            fade_in(e.first);
-            setup_view_transform(e.second, 1, 1, 0, 0, 1);
-            if (e.second.visibility == view_scale_data::view_visibility_t::HIDDEN)
+            if (e.first->minimized && (e.first != current_focus_view))
             {
-                wf::scene::set_node_enabled(e.first->get_transformed_node(), true);
-            }
+                e.second.visibility =
+                    view_scale_data::view_visibility_t::HIDING;
+                setup_view_transform(e.second, 1, 1, 0, 0, 0);
+            } else
+            {
+                fade_in(e.first);
+                setup_view_transform(e.second, 1, 1, 0, 0, 1);
+                if (e.second.visibility == view_scale_data::view_visibility_t::HIDDEN)
+                {
+                    wf::scene::set_node_enabled(e.first->get_transformed_node(), true);
+                }
 
-            e.second.visibility = view_scale_data::view_visibility_t::VISIBLE;
+                e.second.visibility = view_scale_data::view_visibility_t::VISIBLE;
+            }
         }
 
         refocus();
@@ -1374,7 +1424,6 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         remove_transformers();
         scale_data.clear();
         grab->ungrab_input();
-        view_focused.disconnect();
         on_view_mapped.disconnect();
         on_view_set_output.disconnect();
         view_unmapped.disconnect();

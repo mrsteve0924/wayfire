@@ -58,6 +58,7 @@ void wf::view_interface_t::set_output(wf::output_t *new_output)
         view_disappeared_signal data_disappeared;
         data_disappeared.view = self();
         data.output->emit(&data_disappeared);
+        wf::scene::update(get_root_node(), scene::update_flag::REFOCUS);
     }
 }
 
@@ -204,7 +205,7 @@ const wf::scene::floating_inner_ptr& wf::view_interface_t::get_root_node() const
     return priv->root_node;
 }
 
-std::shared_ptr<wf::scene::transform_manager_node_t> wf::view_interface_t::get_transformed_node() const
+const std::shared_ptr<wf::scene::transform_manager_node_t>& wf::view_interface_t::get_transformed_node() const
 {
     return priv->transformed_node;
 }

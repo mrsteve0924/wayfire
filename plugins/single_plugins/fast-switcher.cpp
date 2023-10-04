@@ -11,6 +11,7 @@
 #include <wayfire/util/log.hpp>
 #include <wayfire/seat.hpp>
 #include <wayfire/toplevel-view.hpp>
+#include <wayfire/window-manager.hpp>
 
 /*
  * This plugin provides abilities to switch between views.
@@ -74,7 +75,7 @@ class wayfire_fast_switcher : public wf::per_output_plugin_instance_t, public wf
             wf::view_bring_to_front(views[i]);
         } else
         {
-            output->focus_view(views[i], true);
+            wf::get_core().default_wm->focus_raise_view(views[i]);
         }
     }
 
@@ -112,8 +113,9 @@ class wayfire_fast_switcher : public wf::per_output_plugin_instance_t, public wf
     {
         auto tr = wf::ensure_named_transformer<wf::scene::view_2d_transformer_t>(
             view, wf::TRANSFORMER_2D, transformer_name, view);
+        view->get_transformed_node()->begin_transform_update();
         tr->alpha = alpha;
-        view->damage();
+        view->get_transformed_node()->end_transform_update();
     }
 
     void set_view_highlighted(wayfire_toplevel_view view, bool selected)
@@ -184,11 +186,12 @@ class wayfire_fast_switcher : public wf::per_output_plugin_instance_t, public wf
 
     void switch_terminate()
     {
-        input_grab->ungrab_input();
-        output->deactivate_plugin(&grab_interface);
-
         // May modify alpha
         view_chosen(current_view_index, false);
+
+        // Ungrab after selecting the correct view, so that it gets the focus directly
+        input_grab->ungrab_input();
+        output->deactivate_plugin(&grab_interface);
 
         // Remove transformers after modifying alpha
         for (auto view : views)

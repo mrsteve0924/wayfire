@@ -9,6 +9,7 @@
 #include "wayfire/scene-operations.hpp"
 #include "wayfire/scene-render.hpp"
 #include "wayfire/scene.hpp"
+#include "wayfire/seat.hpp"
 #include "wayfire/signal-definitions.hpp"
 #include <memory>
 #include <wayfire/nonstd/reverse.hpp>
@@ -541,9 +542,9 @@ class core_drag_t : public signal::provider_t
             move_wobbly(v.view, to.x, to.y);
             if (!view_held_in_place)
             {
-                v.view->damage();
+                v.view->get_transformed_node()->begin_transform_update();
                 v.transformer->grab_position = to;
-                v.view->damage();
+                v.view->get_transformed_node()->end_transform_update();
             }
         }
 
@@ -669,7 +670,7 @@ class core_drag_t : public signal::provider_t
 
             current_output    = output;
             data.focus_output = output;
-            wf::get_core().focus_output(output);
+            wf::get_core().seat->focus_output(output);
             emit(&data);
 
             if (output)
@@ -774,7 +775,7 @@ inline void adjust_view_on_output(drag_done_signal *ev)
         ev->focused_output->wset()->move_to_workspace(v, target_ws);
     }
 
-    ev->focused_output->focus_view(focus_view, true);
+    wf::get_core().default_wm->focus_raise_view(focus_view);
 }
 
 /**
