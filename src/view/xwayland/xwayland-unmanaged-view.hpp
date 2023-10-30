@@ -12,7 +12,7 @@
 #include <wayfire/window-manager.hpp>
 #include "../core/core-impl.hpp"
 #include "../core/seat/seat-impl.hpp"
-#include "../view-keyboard-interaction.hpp"
+#include "wayfire/unstable/wlr-view-keyboard-interaction.hpp"
 
 #if WF_HAS_XWAYLAND
 
@@ -24,7 +24,7 @@ class xwayland_unmanaged_view_node_t : public wf::scene::translation_node_t, pub
     xwayland_unmanaged_view_node_t(wayfire_view view) : view_node_tag_t(view)
     {
         _view = view->weak_from_this();
-        this->kb_interaction = std::make_unique<view_keyboard_interaction_t>(view);
+        this->kb_interaction = std::make_unique<wlr_view_keyboard_interaction_t>(view);
     }
 
     wf::keyboard_focus_node_t keyboard_refocus(wf::output_t *output) override
@@ -76,7 +76,7 @@ class xwayland_unmanaged_view_node_t : public wf::scene::translation_node_t, pub
 };
 }
 
-class wayfire_unmanaged_xwayland_view : public wf::view_interface_t, public wayfire_xwayland_view_base
+class wayfire_unmanaged_xwayland_view : public wayfire_xwayland_view_internal_base
 {
   protected:
     wf::wl_listener_wrapper on_set_geometry;
@@ -129,28 +129,18 @@ class wayfire_unmanaged_xwayland_view : public wf::view_interface_t, public wayf
         wf::scene::update(surface_root_node, wf::scene::update_flag::GEOMETRY);
     }
 
-    bool is_mapped() const override
-    {
-        return priv->wsurface != nullptr;
-    }
-
     std::shared_ptr<wf::xwayland_unmanaged_view_node_t> surface_root_node;
 
   public:
-    wayfire_unmanaged_xwayland_view(wlr_xwayland_surface *xww) : wayfire_xwayland_view_base(xww)
+    wayfire_unmanaged_xwayland_view(wlr_xwayland_surface *xww) : wayfire_xwayland_view_internal_base(xww)
     {
         LOGE("new unmanaged xwayland surface ", xw->title, " class: ", xw->class_t,
             " instance: ", xw->instance);
 
-        xw->data = this;
-        role     = wf::VIEW_ROLE_UNMANAGED;
+        role = wf::VIEW_ROLE_UNMANAGED;
         on_set_geometry.set_callback([&] (void*) { update_geometry_from_xsurface(); });
-        on_map.set_callback([&] (void*) { map(xw->surface); });
-        on_unmap.set_callback([&] (void*) { unmap(); });
-
-        on_map.connect(&xw->events.map);
-        on_unmap.connect(&xw->events.unmap);
         on_set_geometry.connect(&xw->events.set_geometry);
+        _initialize();
     }
 
     template<class ConcreteUnmanagedView>
@@ -163,12 +153,11 @@ class wayfire_unmanaged_xwayland_view : public wf::view_interface_t, public wayf
         return self;
     }
 
-    virtual void map(wlr_surface *surface)
+    void handle_map_request(wlr_surface *surface) override
     {
         LOGC(XWL, "Mapping unmanaged xwayland surface ", self());
-        priv->set_mapped(true);
-        this->main_surface = std::make_shared<wf::scene::wlr_surface_node_t>(surface, true);
-        priv->set_mapped_surface_contents(main_surface);
+        do_map(surface, true, false);
+
         update_geometry_from_xsurface();
 
         /* We update the keyboard focus before emitting the map event, so that
@@ -185,11 +174,10 @@ class wayfire_unmanaged_xwayland_view : public wf::view_interface_t, public wayf
             wf::get_core().default_wm->focus_request(self());
         }
 
-        damage();
         emit_view_map();
     }
 
-    virtual void unmap()
+    void handle_unmap_request() override
     {
         LOGC(XWL, "Unmapping unmanaged xwayland surface ", self());
         damage();
@@ -205,45 +193,13 @@ class wayfire_unmanaged_xwayland_view : public wf::view_interface_t, public wayf
 
     void destroy() override
     {
-        on_map.disconnect();
-        on_unmap.disconnect();
         on_set_geometry.disconnect();
-        wayfire_xwayland_view_base::destroy();
+        wayfire_xwayland_view_internal_base::destroy();
     }
 
     wf::xw::view_type get_current_impl_type() const override
     {
         return wf::xw::view_type::UNMANAGED;
-    }
-
-    std::string get_app_id() override
-    {
-        return this->app_id;
-    }
-
-    std::string get_title() override
-    {
-        return this->title;
-    }
-
-    wlr_surface *get_keyboard_focus_surface() override
-    {
-        if (is_mapped() && priv->keyboard_focus_enabled)
-        {
-            return priv->wsurface;
-        }
-
-        return NULL;
-    }
-
-    void ping() override
-    {
-        wayfire_xwayland_view_base::_ping();
-    }
-
-    void close() override
-    {
-        wayfire_xwayland_view_base::_close();
     }
 };
 
@@ -262,16 +218,16 @@ class wayfire_dnd_xwayland_view : public wayfire_unmanaged_xwayland_view
         LOGD("Destroying a Xwayland drag icon");
     }
 
-    void map(wlr_surface *surface) override
+    void handle_map_request(wlr_surface *surface) override
     {
         LOGD("Mapping a Xwayland drag icon");
-        wayfire_unmanaged_xwayland_view::map(surface);
+        wayfire_unmanaged_xwayland_view::handle_map_request(surface);
         wf::scene::readd_front(wf::get_core().scene(), this->get_root_node());
     }
 
-    void unmap() override
+    void handle_unmap_request() override
     {
-        wayfire_unmanaged_xwayland_view::unmap();
+        wayfire_unmanaged_xwayland_view::handle_unmap_request();
         wf::scene::remove_child(this->get_root_node());
     }
 };

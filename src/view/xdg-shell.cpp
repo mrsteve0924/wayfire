@@ -20,7 +20,6 @@
 
 #include "xdg-shell/xdg-toplevel-view.hpp"
 #include <wayfire/view-helpers.hpp>
-#include "view-keyboard-interaction.hpp"
 
 class wayfire_xdg_popup_node : public wf::scene::translation_node_t
 {
@@ -73,12 +72,17 @@ wayfire_xdg_popup::wayfire_xdg_popup(wlr_xdg_popup *popup) : wf::view_interface_
     {
         wf::view_implementation::emit_ping_timeout_signal(self());
     });
+    on_reposition.set_callback([&] (void*)
+    {
+        unconstrain();
+    });
 
     on_map.connect(&popup->base->events.map);
     on_unmap.connect(&popup->base->events.unmap);
     on_destroy.connect(&popup->base->events.destroy);
     on_new_popup.connect(&popup->base->events.new_popup);
     on_ping_timeout.connect(&popup->base->events.ping_timeout);
+    on_reposition.connect(&popup->events.reposition);
 
     popup->base->data = this;
     parent_geometry_changed.set_callback([=] (auto)
@@ -223,6 +227,7 @@ void wayfire_xdg_popup::destroy()
     on_destroy.disconnect();
     on_new_popup.disconnect();
     on_ping_timeout.disconnect();
+    on_reposition.disconnect();
     popup = nullptr;
 }
 
@@ -311,7 +316,7 @@ wf::geometry_t wayfire_xdg_popup::get_geometry()
 
 wlr_surface*wayfire_xdg_popup::get_keyboard_focus_surface()
 {
-    return nullptr;
+    return priv->wsurface;
 }
 
 /**
@@ -351,7 +356,7 @@ static wlr_xdg_shell *xdg_handle = nullptr;
 void wf::init_xdg_shell()
 {
     static wf::wl_listener_wrapper on_xdg_created;
-    xdg_handle = wlr_xdg_shell_create(wf::get_core().display, 2);
+    xdg_handle = wlr_xdg_shell_create(wf::get_core().display, 3);
 
     if (xdg_handle)
     {

@@ -19,7 +19,7 @@
 #include <wayfire/seat.hpp>
 #include <wayfire/view-helpers.hpp>
 #include <string>
-#include "../../view/view-keyboard-interaction.hpp"
+#include "wayfire/unstable/wlr-view-keyboard-interaction.hpp"
 #include "../../view/wlr-surface-pointer-interaction.hpp"
 
 
@@ -40,6 +40,11 @@ void wf::seat_t::set_active_node(wf::scene::node_ptr node)
 
     auto focus = wf::get_core().scene()->keyboard_refocus(priv->active_output);
     priv->set_keyboard_focus(focus.node ? focus.node->shared_from_this() : nullptr);
+}
+
+wf::scene::node_ptr wf::seat_t::get_active_node()
+{
+    return priv->keyboard_focus;
 }
 
 void wf::seat_t::focus_output(wf::output_t *wo)
@@ -169,24 +174,17 @@ void wf::seat_t::focus_view(wayfire_view v)
         set_active_node(view ? view->get_surface_root_node() : nullptr);
     };
 
-    if (!v || !v->is_mapped())
+    v = select_focus_view(v);
+
+    if (!v || !v->is_mapped() || !v->get_keyboard_focus_surface())
     {
         priv->update_active_view(nullptr);
         give_input_focus(nullptr);
         return;
     }
 
-    if (all_dialogs_modal)
-    {
-        v = find_topmost_parent(v);
-    }
-
-    /* If no keyboard focus surface is set, then we don't want to focus the view */
-    if (v->get_keyboard_focus_surface())
-    {
-        priv->update_active_view(v->get_root_node());
-        give_input_focus(select_focus_view(v));
-    }
+    priv->update_active_view(v->get_root_node());
+    give_input_focus(v);
 }
 
 void wf::seat_t::refocus()
@@ -296,7 +294,7 @@ wf::seat_t::seat_t(wl_display *display, std::string name) : seat(wlr_seat_create
     priv->on_wlr_keyboard_grab_end.set_callback([&] (void*)
     {
         if (priv->keyboard_focus &&
-            dynamic_cast<view_keyboard_interaction_t*>(&priv->keyboard_focus->keyboard_interaction()))
+            dynamic_cast<wlr_view_keyboard_interaction_t*>(&priv->keyboard_focus->keyboard_interaction()))
         {
             priv->keyboard_focus->keyboard_interaction().handle_keyboard_enter(this);
         }

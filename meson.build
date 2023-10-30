@@ -2,7 +2,7 @@ project(
 	'wayfire',
 	'c',
 	'cpp',
-	version: '0.8.0',
+	version: '0.9.0',
 	license: 'MIT',
 	meson_version: '>=0.56.0',
 	default_options: [
@@ -58,10 +58,10 @@ if get_option('use_system_wfconfig').disabled()
 
 elif get_option('use_system_wfconfig').enabled()
 	use_system_wfconfig = true
-	wfconfig = dependency('wf-config', version: ['>=0.8.0', '<0.9.0'], required: true)
+	wfconfig = dependency('wf-config', version: ['>=0.9.0', '<0.10.0'], required: true)
 
 elif get_option('use_system_wfconfig').auto()
-	wfconfig = dependency('wf-config', version: ['>=0.8.0', '<0.9.0'], required: false)
+	wfconfig = dependency('wf-config', version: ['>=0.9.0', '<0.10.0'], required: false)
 	use_system_wfconfig = true
 	if not wfconfig.found()
 		use_system_wfconfig = false
@@ -86,8 +86,8 @@ conf_data = configuration_data()
 version = '"@0@"'.format(meson.project_version())
 git = find_program('git', native: true, required: false)
 if git.found()
-	git_commit = run_command([git, 'rev-parse', '--short', 'HEAD'], check: true)
-	git_branch = run_command([git, 'rev-parse', '--abbrev-ref', 'HEAD'], check: true)
+	git_commit = run_command([git, 'rev-parse', '--short', 'HEAD'], check: false)
+	git_branch = run_command([git, 'rev-parse', '--abbrev-ref', 'HEAD'], check: false)
 	if git_commit.returncode() == 0 and git_branch.returncode() == 0
 		version = '"@0@-@1@ (" __DATE__ ", branch \'@2@\')"'.format(
 			meson.project_version(),

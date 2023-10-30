@@ -19,7 +19,7 @@ class workspace_stream_node_t::workspace_stream_instance_t : public scene::
 
     std::vector<scene::render_instance_uptr> instances;
     // True for each instance generated from a desktop environment view.
-    std::vector<bool> is_dekstop_environment;
+    std::vector<bool> is_desktop_environment;
 
     wf::point_t get_offset()
     {
@@ -42,10 +42,9 @@ class workspace_stream_node_t::workspace_stream_instance_t : public scene::
             push_damage(damage);
         };
 
-        for (int layer = (int)scene::layer::ALL_LAYERS - 1; layer >= 0; layer--)
+        for (auto& output_node : wf::collect_output_nodes(wf::get_core().scene(), self->output))
         {
-            auto layer_root = self->output->node_for_layer((scene::layer)layer);
-            for (auto& ch : layer_root->get_children())
+            for (auto& ch : output_node->get_children())
             {
                 if (ch->is_enabled())
                 {
@@ -62,12 +61,12 @@ class workspace_stream_node_t::workspace_stream_instance_t : public scene::
                     num_generated = this->instances.size() - num_generated;
                     for (size_t i = 0; i < num_generated; i++)
                     {
-                        is_dekstop_environment.push_back(is_de);
+                        is_desktop_environment.push_back(is_de);
                     }
                 }
             }
 
-            wf::dassert(instances.size() == is_dekstop_environment.size(), "Setting de flag is wrong!");
+            wf::dassert(instances.size() == is_desktop_environment.size(), "Setting de flag is wrong!");
         }
     }
 
@@ -85,7 +84,7 @@ class workspace_stream_node_t::workspace_stream_instance_t : public scene::
             our_damage += offset;
             for (size_t i = 0; i < instances.size(); i++)
             {
-                if (is_dekstop_environment[i])
+                if (is_desktop_environment[i])
                 {
                     // Special handling: move everything to 'current workspace' so that panels and backgrounds
                     // render at the correct position.

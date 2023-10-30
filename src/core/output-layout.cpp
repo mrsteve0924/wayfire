@@ -540,20 +540,7 @@ struct output_layout_output_t
     /** Check whether the given state can be applied */
     bool test_state(const output_state_t& state)
     {
-        if (state.source == OUTPUT_IMAGE_SOURCE_NONE)
-        {
-            return true;
-        }
-
-        if (state.source == OUTPUT_IMAGE_SOURCE_MIRROR)
-        {
-            return true;
-        }
-
-        /* XXX: are there more things to check? */
-        refresh_custom_modes();
-
-        return is_mode_supported(state.mode);
+        return true;
     }
 
     /** Change the output mode */
@@ -585,8 +572,7 @@ struct output_layout_output_t
                 " for output ", handle->name, ". Trying to use custom mode",
                 "(might not work)");
 
-            wlr_output_set_custom_mode(handle, mode.width, mode.height,
-                mode.refresh);
+            wlr_output_set_custom_mode(handle, mode.width, mode.height, mode.refresh);
         }
 
         wlr_output_commit(handle);
@@ -626,28 +612,21 @@ struct output_layout_output_t
             return;
         }
 
-        wlr_dmabuf_attributes attributes;
         if (source_back_buffer == NULL)
         {
             LOGE("Got empty buffer on ", wo->handle->name);
             return;
         }
 
-        if (!wlr_buffer_get_dmabuf(source_back_buffer, &attributes))
+        auto texture = wlr_texture_from_buffer(get_core().renderer, source_back_buffer);
+        if (!texture)
         {
-            LOGE("Failed reading mirrored output contents from ", wo->handle->name);
-
+            LOGE("Failed to export texture to dmabuf!");
             return;
         }
 
-        /* We export the output to mirror from to a dmabuf, then create
-         * a texture from this and use it to render "our" output */
-        auto texture = wlr_texture_from_dmabuf(
-            get_core().renderer, &attributes);
         render_output(texture);
-
         wlr_texture_destroy(texture);
-        wlr_dmabuf_attributes_finish(&attributes);
     }
 
     void set_enabled(bool enabled)
@@ -977,8 +956,17 @@ class output_layout_t::impl
             }
 
             state.source = OUTPUT_IMAGE_SOURCE_SELF;
-            state.mode   = head->state.mode ? *head->state.mode :
-                this->outputs[handle]->current_state.mode;
+
+            if (head->state.mode)
+            {
+                state.mode = *head->state.mode;
+            } else
+            {
+                state.mode.width   = head->state.custom_mode.width;
+                state.mode.height  = head->state.custom_mode.height;
+                state.mode.refresh = head->state.custom_mode.refresh;
+            }
+
             state.position  = {head->state.x, head->state.y};
             state.scale     = head->state.scale;
             state.transform = head->state.transform;
