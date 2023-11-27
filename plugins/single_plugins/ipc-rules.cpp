@@ -25,6 +25,24 @@
 #include <wayfire/nonstd/wlroots-full.hpp>
 
 
+static std::string role_to_string(enum wf::view_role_t role)
+{
+    switch (role)
+    {
+      case wf::VIEW_ROLE_TOPLEVEL:
+        return "toplevel";
+
+      case wf::VIEW_ROLE_UNMANAGED:
+        return "unmanaged";
+
+      case wf::VIEW_ROLE_DESKTOP_ENVIRONMENT:
+        return "desktop-environment";
+
+      default:
+        return "unknown";
+    }
+}
+
 static std::string layer_to_string(std::optional<wf::scene::layer> layer)
 {
     if (!layer.has_value())
@@ -117,6 +135,7 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         method_repository->register_method("input/configure-device", configure_input_device);
         method_repository->register_method("window-rules/events/watch", on_client_watch);
         method_repository->register_method("window-rules/list-views", list_views);
+        method_repository->register_method("window-rules/list-outputs", list_outputs);
         method_repository->register_method("window-rules/view-info", get_view_info);
         method_repository->register_method("window-rules/output-info", get_output_info);
         method_repository->register_method("window-rules/configure-view", configure_view);
@@ -134,6 +153,7 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         method_repository->unregister_method("input/configure-device");
         method_repository->unregister_method("window-rules/events/watch");
         method_repository->unregister_method("window-rules/list-views");
+        method_repository->unregister_method("window-rules/list-outputs");
         method_repository->unregister_method("window-rules/view-info");
         method_repository->unregister_method("window-rules/output-info");
         method_repository->unregister_method("window-rules/configure-view");
@@ -161,13 +181,16 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         for (auto& view : wf::get_core().get_all_views())
         {
             nlohmann::json v;
+            auto output = view->get_output();
             v["id"]     = view->get_id();
             v["title"]  = view->get_title();
             v["app-id"] = view->get_app_id();
             v["base-geometry"] = wf::ipc::geometry_to_json(get_view_base_geometry(view));
             v["bbox"]   = wf::ipc::geometry_to_json(view->get_bounding_box());
-            v["output"] = view->get_output() ? view->get_output()->to_string() : "null";
+            v["output"] = output ? output->to_string() : "null";
+            v["output-id"] = output ? output->get_id() : -1;
             v["last-focus-timestamp"] = wf::get_focus_timestamp(view);
+            v["role"] = role_to_string(view->role);
 
             v["state"] = {};
             v["state"]["mapped"]    = view->is_mapped();
@@ -240,6 +263,30 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         return wf::ipc::json_error("no such view");
     };
 
+    nlohmann::json output_to_json(wf::output_t *o)
+    {
+        nlohmann::json response;
+        response["id"]   = o->get_id();
+        response["name"] = o->to_string();
+        response["geometry"] = wf::ipc::geometry_to_json(o->get_layout_geometry());
+        response["workarea"] = wf::ipc::geometry_to_json(o->workarea->get_workarea());
+        response["workspace"]["x"] = o->wset()->get_current_workspace().x;
+        response["workspace"]["y"] = o->wset()->get_current_workspace().y;
+        response["workspace"]["grid_width"]  = o->wset()->get_workspace_grid_size().width;
+        response["workspace"]["grid_height"] = o->wset()->get_workspace_grid_size().height;
+        return response;
+    }
+
+    wf::ipc::method_callback list_outputs = [=] (nlohmann::json)
+    {
+        auto response = nlohmann::json::array();
+        for (auto& output : wf::get_core().output_layout->get_outputs())
+        {
+            response.push_back(output_to_json(output));
+        }
+
+        return response;
+    };
 
     wf::ipc::method_callback get_output_info = [=] (nlohmann::json data)
     {
@@ -250,14 +297,7 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
             return wf::ipc::json_error("output not found");
         }
 
-        auto response = wf::ipc::json_ok();
-        response["name"]     = wo->to_string();
-        response["geometry"] = wf::ipc::geometry_to_json(wo->get_layout_geometry());
-        response["workarea"] = wf::ipc::geometry_to_json(wo->workarea->get_workarea());
-        response["workspace"]["x"] = wo->wset()->get_current_workspace().x;
-        response["workspace"]["y"] = wo->wset()->get_current_workspace().y;
-        response["workspace"]["grid_width"]  = wo->wset()->get_workspace_grid_size().width;
-        response["workspace"]["grid_height"] = wo->wset()->get_workspace_grid_size().height;
+        auto response = output_to_json(wo);
         return response;
     };
 
@@ -374,7 +414,7 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         {
 #if WF_HAS_XWAYLAND
             auto surf = view->get_wlr_surface();
-            if (surf && wlr_surface_is_xwayland_surface(surf))
+            if (surf && wlr_xwayland_surface_try_from_wlr_surface(surf))
             {
                 return "x-or";
             }
