@@ -36,7 +36,7 @@ void wayfire_exit::init()
     };
 
     output->add_key(wf::create_option_string<wf::keybinding_t>(
-        "<ctrl> <alt> KEY_BACKSPACE KEY_BACKSPACE KEY_BACKSPACE"), &key);
+        "<ctrl> <alt> KEY_8"), &key);
 }
 
 void wayfire_exit::fini()
