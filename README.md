@@ -98,6 +98,9 @@ meson debugbuild --prefix=/usr --buildtype=debug -Db_sanitize=address,undefined
 ninja -C debugbuild
 sudo ninja -C debugbuild install
 
+to see if wayfire executable was built with address sanitizer run this in terminal:
+nm -an /usr/bin/wayfire | grep asan
+
 When installing wf-config use meson build --prefix=/usr
 ```
 
