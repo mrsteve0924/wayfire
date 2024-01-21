@@ -93,7 +93,7 @@ meson build --prefix=/usr
 ninja -C build
 sudo ninja -C build install
 
-to build in debug mode:
+to build in debug mode with address sanitizer:
 meson debugbuild --prefix=/usr --buildtype=debug -Db_sanitize=address,undefined
 ninja -C debugbuild
 sudo ninja -C debugbuild install
