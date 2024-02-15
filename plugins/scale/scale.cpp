@@ -469,14 +469,11 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
                 last_selected_view = nullptr;
             }
 
+            drag_helper->set_pending_drag(input_position);
             return;
         }
 
-        if (drag_helper->view)
-        {
-            drag_helper->handle_input_released();
-        }
-
+        drag_helper->handle_input_released();
         auto view = scale_find_view_at(input_position, output);
         if (!view || (last_selected_view != view))
         {
@@ -517,7 +514,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
     void handle_pointer_motion(wf::pointf_t to_f, uint32_t time) override
     {
         wf::point_t to{(int)std::round(to_f.x), (int)std::round(to_f.y)};
-        if (!drag_helper->view && last_selected_view)
+        if (!drag_helper->view && last_selected_view && drag_helper->should_start_pending_drag(to))
         {
             wf::move_drag::drag_options_t opts;
             opts.join_views = true;
@@ -527,7 +524,8 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
             // We want to receive raw inputs (e.g. no fake pointer releases) in case the view is moved to
             // another output.
             grab->set_wants_raw_input(true);
-            drag_helper->start_drag(last_selected_view, to, opts);
+            drag_helper->start_drag(last_selected_view, opts);
+            drag_helper->handle_motion(to);
         } else if (drag_helper->view)
         {
             drag_helper->handle_motion(to);
@@ -1169,6 +1167,12 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         layout_slots(get_views());
     };
 
+    wf::signal::connection_t<wf::workarea_changed_signal> workarea_changed =
+        [=] (wf::workarea_changed_signal *ev)
+    {
+        layout_slots(get_views());
+    };
+
     /* View geometry changed. Also called when workspace changes */
     wf::signal::connection_t<wf::view_geometry_changed_signal> view_geometry_changed =
         [=] (wf::view_geometry_changed_signal *ev)
@@ -1352,6 +1356,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         output->connect(&on_view_set_output);
         output->connect(&on_view_mapped);
         output->connect(&workspace_changed);
+        output->connect(&workarea_changed);
         output->connect(&view_disappeared);
         output->connect(&view_minimized);
         output->connect(&view_unmapped);
@@ -1373,6 +1378,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         view_unmapped.disconnect();
         view_minimized.disconnect();
         workspace_changed.disconnect();
+        workarea_changed.disconnect();
         view_geometry_changed.disconnect();
 
         grab->ungrab_input();
@@ -1430,6 +1436,7 @@ class wayfire_scale : public wf::per_output_plugin_instance_t,
         view_disappeared.disconnect();
         view_minimized.disconnect();
         workspace_changed.disconnect();
+        workarea_changed.disconnect();
         view_geometry_changed.disconnect();
         output->deactivate_plugin(&grab_interface);
 

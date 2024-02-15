@@ -8,10 +8,8 @@
 #include <set>
 
 #include "plugins/ipc/ipc-helpers.hpp"
-#include "plugins/ipc/ipc.hpp"
 #include "plugins/ipc/ipc-method-repository.hpp"
 #include "wayfire/core.hpp"
-#include "wayfire/object.hpp"
 #include "wayfire/plugins/common/util.hpp"
 #include "wayfire/unstable/wlr-surface-node.hpp"
 #include "wayfire/plugins/common/shared-core-data.hpp"
@@ -20,7 +18,6 @@
 #include "wayfire/view-helpers.hpp"
 #include "wayfire/window-manager.hpp"
 #include "wayfire/workarea.hpp"
-#include "wayfire/workspace-set.hpp"
 #include "config.h"
 #include <wayfire/nonstd/wlroots-full.hpp>
 
@@ -141,8 +138,9 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         method_repository->register_method("window-rules/configure-view", configure_view);
         method_repository->register_method("window-rules/focus-view", focus_view);
         method_repository->register_method("window-rules/get-focused-view", get_focused_view);
-        ipc_server->connect(&on_client_disconnected);
+        method_repository->connect(&on_client_disconnected);
         wf::get_core().connect(&on_view_mapped);
+        wf::get_core().connect(&on_view_unmapped);
         wf::get_core().connect(&on_kbfocus_changed);
         init_output_tracking();
     }
@@ -174,42 +172,13 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         // no-op
     }
 
-    wf::ipc::method_callback list_views = [] (nlohmann::json)
+    wf::ipc::method_callback list_views = [=] (nlohmann::json)
     {
         auto response = nlohmann::json::array();
 
         for (auto& view : wf::get_core().get_all_views())
         {
-            nlohmann::json v;
-            auto output = view->get_output();
-            v["id"]     = view->get_id();
-            v["title"]  = view->get_title();
-            v["app-id"] = view->get_app_id();
-            v["base-geometry"] = wf::ipc::geometry_to_json(get_view_base_geometry(view));
-            v["bbox"]   = wf::ipc::geometry_to_json(view->get_bounding_box());
-            v["output"] = output ? output->to_string() : "null";
-            v["output-id"] = output ? output->get_id() : -1;
-            v["last-focus-timestamp"] = wf::get_focus_timestamp(view);
-            v["role"] = role_to_string(view->role);
-
-            v["state"] = {};
-            v["state"]["mapped"]    = view->is_mapped();
-            v["state"]["focusable"] = view->is_focusable();
-
-            if (auto toplevel = toplevel_cast(view))
-            {
-                v["parent"]   = toplevel->parent ? (int)toplevel->parent->get_id() : -1;
-                v["geometry"] = wf::ipc::geometry_to_json(toplevel->get_geometry());
-                v["state"]["tiled"] = toplevel->pending_tiled_edges();
-                v["state"]["fullscreen"] = toplevel->pending_fullscreen();
-                v["state"]["minimized"]  = toplevel->minimized;
-                v["state"]["activated"]  = toplevel->activated;
-            } else
-            {
-                v["geometry"] = wf::ipc::geometry_to_json(view->get_bounding_box());
-            }
-
-            v["layer"] = layer_to_string(get_view_layer(view));
+            nlohmann::json v = view_to_json(view);
             response.push_back(v);
         }
 
@@ -346,14 +315,14 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
 
   private:
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> method_repository;
-    wf::shared_data::ref_ptr_t<wf::ipc::server_t> ipc_server;
 
     // Track a list of clients which have requested watch
-    std::set<wf::ipc::client_t*> clients;
+    std::set<wf::ipc::client_interface_t*> clients;
 
-    wf::ipc::method_callback on_client_watch = [=] (nlohmann::json data)
+    wf::ipc::method_callback_full on_client_watch =
+        [=] (nlohmann::json data, wf::ipc::client_interface_t *client)
     {
-        clients.insert(ipc_server->get_current_request_client());
+        clients.insert(client);
         return wf::ipc::json_ok();
     };
 
@@ -377,6 +346,11 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
     wf::signal::connection_t<wf::view_mapped_signal> on_view_mapped = [=] (wf::view_mapped_signal *ev)
     {
         send_view_to_subscribes(ev->view, "view-mapped");
+    };
+
+    wf::signal::connection_t<wf::view_unmapped_signal> on_view_unmapped = [=] (wf::view_unmapped_signal *ev)
+    {
+        send_view_to_subscribes(ev->view, "view-unmapped");
     };
 
     wf::signal::connection_t<wf::keyboard_focus_changed_signal> on_kbfocus_changed =
@@ -446,19 +420,31 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
             return nullptr;
         }
 
+        auto output = view->get_output();
         nlohmann::json description;
         description["id"]     = view->get_id();
-        description["app-id"] = view->get_app_id();
+        description["pid"]    = get_view_pid(view);
         description["title"]  = view->get_title();
+        description["app-id"] = view->get_app_id();
+        description["base-geometry"] = wf::ipc::geometry_to_json(get_view_base_geometry(view));
         auto toplevel = wf::toplevel_cast(view);
+        description["parent"]   = toplevel && toplevel->parent ? (int)toplevel->parent->get_id() : -1;
         description["geometry"] =
             wf::ipc::geometry_to_json(toplevel ? toplevel->get_pending_geometry() : view->get_bounding_box());
-        description["output"] = view->get_output() ? view->get_output()->get_id() : -1;
+        description["bbox"] = wf::ipc::geometry_to_json(view->get_bounding_box());
+        description["output-id"]   = view->get_output() ? view->get_output()->get_id() : -1;
+        description["output-name"] = output ? output->to_string() : "null";
+        description["last-focus-timestamp"] = wf::get_focus_timestamp(view);
+        description["role"]   = role_to_string(view->role);
+        description["mapped"] = view->is_mapped();
+        description["layer"]  = layer_to_string(get_view_layer(view));
         description["tiled-edges"] = toplevel ? toplevel->pending_tiled_edges() : 0;
         description["fullscreen"]  = toplevel ? toplevel->pending_fullscreen() : false;
         description["minimized"]   = toplevel ? toplevel->minimized : false;
+        description["activated"]   = toplevel ? toplevel->activated : false;
         description["focusable"]   = view->is_focusable();
         description["type"] = get_view_type(view);
+
         return description;
     }
 
@@ -497,6 +483,29 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
 
         return wf::ipc::json_error("Unknown input device!");
     };
+
+    pid_t get_view_pid(wayfire_view view)
+    {
+        pid_t pid = -1;
+        if (!view)
+        {
+            return pid;
+        }
+
+#if WF_HAS_XWAYLAND
+        wlr_surface *wlr_surface = view->get_wlr_surface();
+        if (wlr_surface && wlr_xwayland_surface_try_from_wlr_surface(wlr_surface))
+        {
+            pid = wlr_xwayland_surface_try_from_wlr_surface(wlr_surface)->pid;
+        } else
+#endif
+        if (view && view->get_client())
+        {
+            wl_client_get_credentials(view->get_client(), &pid, 0, 0);
+        }
+
+        return pid;
+    }
 };
 
 DECLARE_WAYFIRE_PLUGIN(ipc_rules_t);

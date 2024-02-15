@@ -16,6 +16,7 @@
 #include <sstream>
 #include <cstring>
 #include <unordered_set>
+#include <drm_fourcc.h>
 
 #include <wayfire/debug.hpp>
 #include <wayfire/util/log.hpp>
@@ -205,6 +206,8 @@ bool output_state_t::operator ==(const output_state_t& other) const
     eq &= (mode.refresh == other.mode.refresh);
     eq &= (transform == other.transform);
     eq &= (scale == other.scale);
+    eq &= (vrr == other.vrr);
+    eq &= (depth == other.depth);
 
     return eq;
 }
@@ -212,6 +215,25 @@ bool output_state_t::operator ==(const output_state_t& other) const
 inline bool is_shutting_down()
 {
     return wf::get_core().get_current_state() == compositor_state_t::SHUTDOWN;
+}
+
+static const char *get_format_name(uint32_t format)
+{
+    switch (format)
+    {
+      case DRM_FORMAT_XRGB2101010:
+        return "DRM_FORMAT_XRGB2101010";
+
+      case DRM_FORMAT_XBGR2101010:
+        return "DRM_FORMAT_XBGR2101010";
+
+      case DRM_FORMAT_XRGB8888:
+        return "DRM_FORMAT_XRGB8888";
+
+      case DRM_FORMAT_INVALID:
+      default:
+        return "DRM_FORMAT_INVALID";
+    }
 }
 
 /** Represents a single output in the output layout */
@@ -222,6 +244,8 @@ struct output_layout_output_t
     bool is_externally_managed = false;
     bool is_nested_compositor  = false;
     bool inhibited = false;
+    std::map<int, std::vector<uint32_t>> formats_for_depth;
+    int current_bit_depth = RENDER_BIT_DEPTH_DEFAULT;
 
     std::unique_ptr<wf::output_impl_t> output;
     wl_listener_wrapper on_destroy, on_commit;
@@ -231,6 +255,8 @@ struct output_layout_output_t
     wf::option_wrapper_t<wf::output_config::position_t> position_opt;
     wf::option_wrapper_t<double> scale_opt;
     wf::option_wrapper_t<std::string> transform_opt;
+    wf::option_wrapper_t<bool> vrr_opt;
+    wf::option_wrapper_t<int> depth_opt;
 
     wf::option_wrapper_t<bool> use_ext_config{
         "workarounds/use_external_output_configuration"};
@@ -243,6 +269,8 @@ struct output_layout_output_t
         position_opt.load_option(name + "/position");
         scale_opt.load_option(name + "/scale");
         transform_opt.load_option(name + "/transform");
+        vrr_opt.load_option(name + "/vrr");
+        depth_opt.load_option(name + "/depth");
     }
 
     output_layout_output_t(wlr_output *handle)
@@ -270,6 +298,13 @@ struct output_layout_output_t
             });
             on_commit.connect(&handle->events.commit);
         }
+
+        formats_for_depth[8]  = {DRM_FORMAT_XRGB8888};
+        formats_for_depth[10] = {
+            DRM_FORMAT_XRGB2101010,
+            DRM_FORMAT_XBGR2101010,
+            DRM_FORMAT_XRGB8888,
+        };
     }
 
     /**
@@ -436,6 +471,8 @@ struct output_layout_output_t
 
         state.scale     = scale_opt;
         state.transform = get_transform_from_string(transform_opt);
+        state.vrr   = vrr_opt;
+        state.depth = depth_opt;
         return state;
     }
 
@@ -557,7 +594,9 @@ struct output_layout_output_t
             /* Do not modeset if nothing changed */
             if ((handle->current_mode->width == mode.width) &&
                 (handle->current_mode->height == mode.height) &&
-                (handle->current_mode->refresh == mode.refresh))
+                (handle->current_mode->refresh == mode.refresh) &&
+                ((handle->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED) == current_state.vrr) &&
+                (current_bit_depth == current_state.depth))
             {
                 /* Commit the enabling of the output */
                 wlr_output_commit(handle);
@@ -582,6 +621,39 @@ struct output_layout_output_t
         }
 
         wlr_output_commit(handle);
+
+        const bool adaptive_sync_enabled = (handle->adaptive_sync_status == WLR_OUTPUT_ADAPTIVE_SYNC_ENABLED);
+
+        if (adaptive_sync_enabled != current_state.vrr)
+        {
+            wlr_output_enable_adaptive_sync(handle, current_state.vrr);
+            if (wlr_output_test(handle))
+            {
+                wlr_output_commit(handle);
+                LOGD("Changed adaptive sync on output: ", handle->name, " to ", current_state.vrr);
+            } else
+            {
+                LOGE("Failed to change adaptive sync on output: ", handle->name);
+                wlr_output_rollback(handle);
+            }
+        }
+
+        if (current_state.depth != current_bit_depth)
+        {
+            for (auto fmt : formats_for_depth[current_state.depth])
+            {
+                wlr_output_set_render_format(handle, fmt);
+                if (wlr_output_test(handle))
+                {
+                    wlr_output_commit(handle);
+                    current_bit_depth = current_state.depth;
+                    LOGD("Set output format to ", get_format_name(fmt), " on output ", handle->name);
+                    break;
+                }
+
+                LOGD("Failed to set output format ", get_format_name(fmt), " on output ", handle->name);
+            }
+        }
     }
 
     /* Mirroring implementation */
@@ -978,6 +1050,15 @@ class output_layout_t::impl
             state.position  = {head->state.x, head->state.y};
             state.scale     = head->state.scale;
             state.transform = head->state.transform;
+            state.vrr = head->state.adaptive_sync_enabled;
+            if ((handle->pending.render_format == DRM_FORMAT_XRGB2101010) ||
+                (handle->pending.render_format == DRM_FORMAT_XBGR2101010))
+            {
+                state.depth = 10;
+            } else
+            {
+                state.depth = 8;
+            }
         }
 
         return result;
@@ -1060,6 +1141,18 @@ class output_layout_t::impl
     {
         LOGI("new output: ", output->name,
             " (\"", output->make, " ", output->model, " ", output->serial, "\")");
+
+        if (output->non_desktop)
+        {
+            LOGD("Non-desktop output ", output->name, " found");
+            if (get_core().protocols.drm_v1)
+            {
+                LOGD("Drm lease offered to ", output->name);
+                wlr_drm_lease_v1_manager_offer_output(get_core().protocols.drm_v1, output);
+            }
+
+            return;
+        }
 
         if (!wlr_output_init_render(output,
             get_core().allocator, get_core().renderer))
