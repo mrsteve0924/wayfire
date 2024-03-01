@@ -37,10 +37,21 @@ void wf::keyboard_t::setup_listeners()
             return;
         }
 
-        seat->priv->set_keyboard(this);
-        if (!handle_keyboard_key(ev->time_msec, ev->keycode,
-            ev->state) && (mode == input_event_processing_mode_t::FULL))
+        auto is_im_sent = wf::get_core_impl().im_relay->is_im_sent(handle);
+        if (!is_im_sent)
         {
+            seat->priv->set_keyboard(this);
+        }
+
+        if ((is_im_sent || !handle_keyboard_key(ev->keycode, ev->state)) &&
+            (mode == input_event_processing_mode_t::FULL))
+        {
+            if (!is_im_sent &&
+                wf::get_core_impl().im_relay->handle_key(handle, ev->time_msec, ev->keycode, ev->state))
+            {
+                return;
+            }
+
             if (ev->state == WL_KEYBOARD_KEY_STATE_PRESSED)
             {
                 seat->priv->pressed_keys.insert(ev->keycode);
@@ -51,13 +62,11 @@ void wf::keyboard_t::setup_listeners()
                 if (seat->priv->pressed_keys.count(ev->keycode))
                 {
                     seat->priv->pressed_keys.erase(seat->priv->pressed_keys.find(ev->keycode));
-                } else
-                {
-                    return;
                 }
             }
 
-            if (seat->priv->keyboard_focus)
+            // don't send IM sent keys to plugin grabs
+            if (seat->priv->keyboard_focus && !(seat->priv->is_grab && is_im_sent))
             {
                 seat->priv->keyboard_focus->keyboard_interaction()
                     .handle_keyboard_key(wf::get_core().seat.get(), *ev);
@@ -75,7 +84,11 @@ void wf::keyboard_t::setup_listeners()
 
         if (!wf::get_core_impl().im_relay->handle_modifier(kbd))
         {
-            wlr_seat_set_keyboard(seat, kbd);
+            if (!wf::get_core_impl().im_relay->is_im_sent(handle))
+            {
+                wlr_seat_set_keyboard(seat, kbd);
+            }
+
             wlr_seat_keyboard_send_modifiers(seat, &kbd->modifiers);
         }
 
@@ -287,18 +300,12 @@ bool wf::keyboard_t::has_only_modifiers()
     return true;
 }
 
-bool wf::keyboard_t::handle_keyboard_key(uint32_t time, uint32_t key, uint32_t state)
+bool wf::keyboard_t::handle_keyboard_key(uint32_t key, uint32_t state)
 {
     using namespace std::chrono;
 
     auto& input = wf::get_core_impl().input;
     auto& seat  = wf::get_core_impl().seat;
-
-    if (wf::get_core_impl().im_relay->is_im_sent(handle))
-    {
-        mod_binding_key = 0;
-        return false;
-    }
 
     bool handled_in_plugin = false;
     auto mod = mod_from_key(key);
@@ -328,11 +335,6 @@ bool wf::keyboard_t::handle_keyboard_key(uint32_t time, uint32_t key, uint32_t s
 
         handled_in_plugin |= wf::get_core().bindings->handle_key(
             wf::keybinding_t{get_modifiers(), key}, mod_binding_key);
-
-        if (!handled_in_plugin)
-        {
-            handled_in_plugin |= wf::get_core_impl().im_relay->handle_key(handle, time, key, state);
-        }
     } else
     {
         if (mod_binding_key != 0)
@@ -347,11 +349,6 @@ bool wf::keyboard_t::handle_keyboard_key(uint32_t time, uint32_t key, uint32_t s
                 wf::get_core().bindings->handle_key(
                     wf::keybinding_t{get_modifiers() | mod, 0}, mod_binding_key);
             }
-        }
-
-        if (!handled_in_plugin)
-        {
-            handled_in_plugin |= wf::get_core_impl().im_relay->handle_key(handle, time, key, state);
         }
 
         mod_binding_key = 0;

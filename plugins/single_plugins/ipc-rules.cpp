@@ -19,6 +19,7 @@
 #include "wayfire/window-manager.hpp"
 #include "wayfire/workarea.hpp"
 #include "config.h"
+#include <wayfire/debug.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
 
 
@@ -128,35 +129,46 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
   public:
     void init() override
     {
+        method_repository->register_method("wayfire/configuration", get_wayfire_configuration_info);
         method_repository->register_method("input/list-devices", list_input_devices);
         method_repository->register_method("input/configure-device", configure_input_device);
         method_repository->register_method("window-rules/events/watch", on_client_watch);
         method_repository->register_method("window-rules/list-views", list_views);
         method_repository->register_method("window-rules/list-outputs", list_outputs);
+        method_repository->register_method("window-rules/list-wsets", list_wsets);
         method_repository->register_method("window-rules/view-info", get_view_info);
         method_repository->register_method("window-rules/output-info", get_output_info);
+        method_repository->register_method("window-rules/wset-info", get_wset_info);
         method_repository->register_method("window-rules/configure-view", configure_view);
         method_repository->register_method("window-rules/focus-view", focus_view);
         method_repository->register_method("window-rules/get-focused-view", get_focused_view);
+        method_repository->register_method("window-rules/close-view", close_view);
         method_repository->connect(&on_client_disconnected);
         wf::get_core().connect(&on_view_mapped);
         wf::get_core().connect(&on_view_unmapped);
         wf::get_core().connect(&on_kbfocus_changed);
+        wf::get_core().connect(&on_title_changed);
+        wf::get_core().connect(&on_app_id_changed);
+        wf::get_core().connect(&on_plugin_activation_changed);
         init_output_tracking();
     }
 
     void fini() override
     {
+        method_repository->unregister_method("wayfire/configuration");
         method_repository->unregister_method("input/list-devices");
         method_repository->unregister_method("input/configure-device");
         method_repository->unregister_method("window-rules/events/watch");
         method_repository->unregister_method("window-rules/list-views");
         method_repository->unregister_method("window-rules/list-outputs");
+        method_repository->unregister_method("window-rules/list-wsets");
         method_repository->unregister_method("window-rules/view-info");
         method_repository->unregister_method("window-rules/output-info");
+        method_repository->unregister_method("window-rules/wset-info");
         method_repository->unregister_method("window-rules/configure-view");
         method_repository->unregister_method("window-rules/focus-view");
         method_repository->unregister_method("window-rules/get-focused-view");
+        method_repository->unregister_method("window-rules/close-view");
         fini_output_tracking();
     }
 
@@ -165,12 +177,36 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         output->connect(&_tiled);
         output->connect(&_minimized);
         output->connect(&_fullscreened);
+        output->connect(&on_wset_changed);
+        output->connect(&on_wset_workspace_changed);
+
+        nlohmann::json data;
+        data["event"]  = "output-added";
+        data["output"] = output_to_json(output);
+        send_event_to_subscribes(data, data["event"]);
     }
 
     void handle_output_removed(wf::output_t *output) override
     {
-        // no-op
+        nlohmann::json data;
+        data["event"]  = "output-removed";
+        data["output"] = output_to_json(output);
+        send_event_to_subscribes(data, data["event"]);
     }
+
+    wf::ipc::method_callback get_wayfire_configuration_info = [=] (nlohmann::json)
+    {
+        nlohmann::json response;
+
+        response["api-version"]    = WAYFIRE_API_ABI_VERSION;
+        response["plugin-path"]    = PLUGIN_PATH;
+        response["plugin-xml-dir"] = PLUGIN_XML_DIR;
+        response["xwayland-support"] = WF_HAS_XWAYLAND;
+
+        response["build-commit"] = wf::version::git_commit;
+        response["build-branch"] = wf::version::git_branch;
+        return response;
+    };
 
     wf::ipc::method_callback list_views = [=] (nlohmann::json)
     {
@@ -232,13 +268,27 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         return wf::ipc::json_error("no such view");
     };
 
+    wf::ipc::method_callback close_view = [=] (nlohmann::json data)
+    {
+        WFJSON_EXPECT_FIELD(data, "id", number_integer);
+        if (auto view = wf::ipc::find_view_by_id(data["id"]))
+        {
+            auto response = wf::ipc::json_ok();
+            view->close();
+            return response;
+        }
+
+        return wf::ipc::json_error("no such view");
+    };
+
     nlohmann::json output_to_json(wf::output_t *o)
     {
         nlohmann::json response;
         response["id"]   = o->get_id();
         response["name"] = o->to_string();
-        response["geometry"] = wf::ipc::geometry_to_json(o->get_layout_geometry());
-        response["workarea"] = wf::ipc::geometry_to_json(o->workarea->get_workarea());
+        response["geometry"]   = wf::ipc::geometry_to_json(o->get_layout_geometry());
+        response["workarea"]   = wf::ipc::geometry_to_json(o->workarea->get_workarea());
+        response["wset-index"] = o->wset()->get_index();
         response["workspace"]["x"] = o->wset()->get_current_workspace().x;
         response["workspace"]["y"] = o->wset()->get_current_workspace().y;
         response["workspace"]["grid_width"]  = o->wset()->get_workspace_grid_size().width;
@@ -313,16 +363,72 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         return wf::ipc::json_ok();
     };
 
+    nlohmann::json wset_to_json(wf::workspace_set_t *wset)
+    {
+        nlohmann::json response;
+        response["index"] = wset->get_index();
+        response["name"]  = wset->to_string();
+
+        auto output = wset->get_attached_output();
+        response["output-id"]   = output ? (int)output->get_id() : -1;
+        response["output-name"] = output ? output->to_string() : "";
+        response["workspace"]["x"] = wset->get_current_workspace().x;
+        response["workspace"]["y"] = wset->get_current_workspace().y;
+        response["workspace"]["grid_width"]  = wset->get_workspace_grid_size().width;
+        response["workspace"]["grid_height"] = wset->get_workspace_grid_size().height;
+        return response;
+    }
+
+    wf::ipc::method_callback list_wsets = [=] (nlohmann::json)
+    {
+        auto response = nlohmann::json::array();
+        for (auto& workspace_set : wf::workspace_set_t::get_all())
+        {
+            response.push_back(wset_to_json(workspace_set.get()));
+        }
+
+        return response;
+    };
+
+    wf::ipc::method_callback get_wset_info = [=] (nlohmann::json data)
+    {
+        WFJSON_EXPECT_FIELD(data, "id", number_integer);
+        auto ws = wf::ipc::find_workspace_set_by_index(data["id"]);
+        if (!ws)
+        {
+            return wf::ipc::json_error("workspace set not found");
+        }
+
+        auto response = wset_to_json(ws);
+        return response;
+    };
+
   private:
     wf::shared_data::ref_ptr_t<wf::ipc::method_repository_t> method_repository;
 
     // Track a list of clients which have requested watch
-    std::set<wf::ipc::client_interface_t*> clients;
+    std::map<wf::ipc::client_interface_t*, std::set<std::string>> clients;
 
     wf::ipc::method_callback_full on_client_watch =
         [=] (nlohmann::json data, wf::ipc::client_interface_t *client)
     {
-        clients.insert(client);
+        static constexpr const char *EVENTS = "events";
+        WFJSON_OPTIONAL_FIELD(data, EVENTS, array);
+        std::set<std::string> subscribed_to;
+        if (data.contains(EVENTS))
+        {
+            for (auto& sub : data[EVENTS])
+            {
+                if (!sub.is_string())
+                {
+                    return wf::ipc::json_error("Event list contains non-string entries!");
+                }
+
+                subscribed_to.insert((std::string)sub);
+            }
+        }
+
+        clients[client] = subscribed_to;
         return wf::ipc::json_ok();
     };
 
@@ -337,9 +443,17 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         nlohmann::json event;
         event["event"] = event_name;
         event["view"]  = view_to_json(view);
-        for (auto& client : clients)
+        send_event_to_subscribes(event, event_name);
+    }
+
+    void send_event_to_subscribes(const nlohmann::json& data, const std::string& event_name)
+    {
+        for (auto& [client, events] : clients)
         {
-            client->send_json(event);
+            if (events.empty() || events.count(event_name))
+            {
+                client->send_json(data);
+            }
         }
     }
 
@@ -375,6 +489,51 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
     wf::signal::connection_t<wf::view_fullscreen_signal> _fullscreened = [=] (wf::view_fullscreen_signal *ev)
     {
         send_view_to_subscribes(ev->view, "view-fullscreen");
+    };
+
+    wf::signal::connection_t<wf::view_title_changed_signal> on_title_changed =
+        [=] (wf::view_title_changed_signal *ev)
+    {
+        send_view_to_subscribes(ev->view, "view-title-changed");
+    };
+
+    wf::signal::connection_t<wf::view_app_id_changed_signal> on_app_id_changed =
+        [=] (wf::view_app_id_changed_signal *ev)
+    {
+        send_view_to_subscribes(ev->view, "view-app-id-changed");
+    };
+
+    wf::signal::connection_t<wf::output_plugin_activated_changed_signal> on_plugin_activation_changed =
+        [=] (wf::output_plugin_activated_changed_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"]  = "plugin-activation-state-changed";
+        data["plugin"] = ev->plugin_name;
+        data["state"]  = ev->activated;
+        data["output"] = ev->output ? (int)ev->output->get_id() : -1;
+        send_event_to_subscribes(data, data["event"]);
+    };
+
+    wf::signal::connection_t<wf::workspace_set_changed_signal> on_wset_changed =
+        [=] (wf::workspace_set_changed_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"]    = "output-wset-changed";
+        data["new-wset"] = ev->new_wset ? (int)ev->new_wset->get_id() : -1;
+        data["output"]   = ev->output ? (int)ev->output->get_id() : -1;
+        send_event_to_subscribes(data, data["event"]);
+    };
+
+    wf::signal::connection_t<wf::workspace_changed_signal> on_wset_workspace_changed =
+        [=] (wf::workspace_changed_signal *ev)
+    {
+        nlohmann::json data;
+        data["event"] = "wset-workspace-changed";
+        data["previous-workspace"] = wf::ipc::point_to_json(ev->old_viewport);
+        data["new-workspace"] = wf::ipc::point_to_json(ev->new_viewport);
+        data["output"] = ev->output ? (int)ev->output->get_id() : -1;
+        data["wset"]   = (ev->output && ev->output->wset()) ? (int)ev->output->wset()->get_id() : -1;
+        send_event_to_subscribes(data, data["event"]);
     };
 
     std::string get_view_type(wayfire_view view)
@@ -442,7 +601,9 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
         description["fullscreen"]  = toplevel ? toplevel->pending_fullscreen() : false;
         description["minimized"]   = toplevel ? toplevel->minimized : false;
         description["activated"]   = toplevel ? toplevel->activated : false;
-        description["focusable"]   = view->is_focusable();
+        description["sticky"]     = toplevel ? toplevel->sticky : false;
+        description["wset-index"] = toplevel && toplevel->get_wset() ? toplevel->get_wset()->get_index() : -1;
+        description["focusable"]  = view->is_focusable();
         description["type"] = get_view_type(view);
 
         return description;
@@ -504,7 +665,7 @@ class ipc_rules_t : public wf::plugin_interface_t, public wf::per_output_tracker
             wl_client_get_credentials(view->get_client(), &pid, 0, 0);
         }
 
-        return pid;
+        return pid; // NOLINT
     }
 };
 

@@ -15,6 +15,23 @@ wf::input_method_relay::input_method_relay()
         auto wlr_text_input = static_cast<wlr_text_input_v3*>(data);
         text_inputs.push_back(std::make_unique<wf::text_input>(this,
             wlr_text_input));
+        // Sometimes text_input is created after the surface, so we failed to
+        // set_focus when the surface is focused. Try once here.
+        //
+        // If no surface has been created, set_focus does nothing.
+        //
+        // Example apps (all GTK4): gnome-font-viewer, easyeffects
+        auto& seat = wf::get_core_impl().seat;
+        if (auto focus = seat->priv->keyboard_focus)
+        {
+            auto surface = wf::node_to_view(focus)->get_keyboard_focus_surface();
+
+            if (surface && (wl_resource_get_client(wlr_text_input->resource) ==
+                            wl_resource_get_client(surface->resource)))
+            {
+                wlr_text_input_v3_send_enter(wlr_text_input, surface);
+            }
+        }
     });
 
     on_input_method_new.set_callback([&] (void *data)
@@ -30,6 +47,8 @@ wf::input_method_relay::input_method_relay()
 
         LOGD("new input method connected");
         input_method = new_input_method;
+        last_done_serial.reset();
+        next_done_serial = 0;
         on_input_method_commit.connect(&input_method->events.commit);
         on_input_method_destroy.connect(&input_method->events.destroy);
         on_grab_keyboard.connect(&input_method->events.grab_keyboard);
@@ -50,20 +69,15 @@ wf::input_method_relay::input_method_relay()
         auto evt_input_method = static_cast<wlr_input_method_v2*>(data);
         assert(evt_input_method == input_method);
 
-        // FIXME: workaround focus change while preediting
+        // When we switch focus, we send a done event to the IM.
+        // The IM may need time to process further events and may send additional commits after switching
+        // focus, which belong to the old text input.
         //
-        // With input method v2, we have no way to notify the input method that
-        // input focus has changed. The input method maintains its state, and
-        // will bring it to the new window, i.e. a half-finished preedit string
-        // from the old window will be brought to the new one. This is undesired.
-        //
-        // We ignore such commit requests so it doesn't have any affect on the
-        // new window. Even when the previous window isn't preediting when
-        // switching focus, it doesn't have any bad effect to the new window anyway.
-        if (focus_just_changed)
+        // To prevent this, we simply ignore commits which do not acknowledge the newest done event from the
+        // compositor.
+        if (input_method->current_serial < last_done_serial.value_or(0))
         {
-            LOGI("focus_just_changed, ignore input method commit");
-            focus_just_changed = false;
+            LOGD("focus just changed, ignore input method commit");
             return;
         }
 
@@ -164,6 +178,13 @@ void wf::input_method_relay::send_im_state(wlr_text_input_v3 *input)
     wlr_input_method_v2_send_content_type(input_method,
         input->current.content_type.hint,
         input->current.content_type.purpose);
+    send_im_done();
+}
+
+void wf::input_method_relay::send_im_done()
+{
+    last_done_serial = next_done_serial;
+    next_done_serial++;
     wlr_input_method_v2_send_done(input_method);
 }
 
