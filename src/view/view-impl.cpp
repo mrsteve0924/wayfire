@@ -217,7 +217,8 @@ void wf::view_interface_t::view_priv_impl::set_mapped_surface_contents(
         return;
     }
 
-    wsurface = content->get_surface();
+    wsurface  = content->get_surface();
+    is_mapped = true;
 
     // Locate the proper place to add the surface contents.
     // This is not trivial because we may have added content node before (if we currently are remapping).
@@ -233,7 +234,9 @@ void wf::view_interface_t::view_priv_impl::set_mapped_surface_contents(
 
 void wf::view_interface_t::view_priv_impl::unset_mapped_surface_contents()
 {
-    wsurface = nullptr;
+    wsurface  = nullptr;
+    is_mapped = false;
+
     replace_node_or_add_front(surface_root_node, current_content, dummy_node);
 
     if (auto wcont = dynamic_cast<scene::wlr_surface_node_t*>(current_content.get()))
@@ -384,15 +387,7 @@ wayfire_toplevel_view wf::find_topmost_parent(wayfire_toplevel_view v)
 wf::pointf_t wf::place_popup_at(wlr_surface *parent, wlr_surface *popup, wf::pointf_t relative)
 {
     auto popup_parent = wf::wl_surface_to_wayfire_view(parent->resource).get();
-
     wf::pointf_t popup_offset = relative;
-    if (wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(parent))
-    {
-        wlr_box box;
-        wlr_xdg_surface_get_geometry(xdg_surface, &box);
-        popup_offset.x += box.x;
-        popup_offset.y += box.y;
-    }
 
     // Get the {0, 0} of the parent view in output coordinates
     popup_offset += popup_parent->get_surface_root_node()->to_global({0, 0});

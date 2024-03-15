@@ -8,12 +8,9 @@
 #include "pointer.hpp"
 #include "keyboard.hpp"
 #include "../core-impl.hpp"
-#include "../../output/output-impl.hpp"
-#include "cursor.hpp"
 #include "touch.hpp"
 #include "input-manager.hpp"
 #include "input-method-relay.hpp"
-#include "wayfire/compositor-view.hpp"
 #include "wayfire/signal-definitions.hpp"
 
 void wf::keyboard_t::setup_listeners()
@@ -27,13 +24,13 @@ void wf::keyboard_t::setup_listeners()
     on_key.set_callback([&] (void *data)
     {
         auto ev    = static_cast<wlr_keyboard_key_event*>(data);
-        auto mode  = emit_device_event_signal(ev);
+        auto mode  = emit_device_event_signal(ev, &handle->base);
         auto& seat = wf::get_core_impl().seat;
+        wf::get_core().seat->notify_activity();
 
         if (mode == input_event_processing_mode_t::IGNORE)
         {
-            wf::get_core().seat->notify_activity();
-            emit_device_post_event_signal(ev);
+            emit_device_post_event_signal(ev, &handle->base);
             return;
         }
 
@@ -43,13 +40,15 @@ void wf::keyboard_t::setup_listeners()
             seat->priv->set_keyboard(this);
         }
 
+        LOGC(IM, "Received key=", ev->keycode, " state=", ev->state, " im=", is_im_sent);
         if ((is_im_sent || !handle_keyboard_key(ev->keycode, ev->state)) &&
             (mode == input_event_processing_mode_t::FULL))
         {
             if (!is_im_sent &&
                 wf::get_core_impl().im_relay->handle_key(handle, ev->time_msec, ev->keycode, ev->state))
             {
-                return;
+                LOGC(IM, "key=", ev->keycode, " state=", ev->state, " swallowed by IM.");
+                return emit_device_post_event_signal(ev, &handle->base);
             }
 
             if (ev->state == WL_KEYBOARD_KEY_STATE_PRESSED)
@@ -62,25 +61,44 @@ void wf::keyboard_t::setup_listeners()
                 if (seat->priv->pressed_keys.count(ev->keycode))
                 {
                     seat->priv->pressed_keys.erase(seat->priv->pressed_keys.find(ev->keycode));
+                } else
+                {
+                    LOGC(IM, "Key ", ev->keycode, " ignored.");
+                    return emit_device_post_event_signal(ev, &handle->base);
                 }
             }
 
-            // don't send IM sent keys to plugin grabs
-            if (seat->priv->keyboard_focus && !(seat->priv->is_grab && is_im_sent))
+            pre_client_input_event_signal<wlr_keyboard_key_event> pre_ev;
+            pre_ev.event  = ev;
+            pre_ev.device = &handle->base;
+            pre_ev.focus_node = seat->priv->keyboard_focus;
+            wf::get_core().emit(&pre_ev);
+
+            if (pre_ev.carried_out)
             {
+                LOGC(IM, "key=", ev->keycode, " state=", ev->state, " swallowed by a plugin in pre-client.");
+            } else if (seat->priv->keyboard_focus)
+            {
+                LOGC(IM, "key=", ev->keycode, " state=", ev->state, " sent to node.");
                 seat->priv->keyboard_focus->keyboard_interaction()
                     .handle_keyboard_key(wf::get_core().seat.get(), *ev);
             }
+        } else
+        {
+            LOGC(IM, "key=", ev->keycode, " state=", ev->state, " swallowed by a plugin.");
         }
 
-        wf::get_core().seat->notify_activity();
-        emit_device_post_event_signal(ev);
+        emit_device_post_event_signal(ev, &handle->base);
     });
 
     on_modifier.set_callback([&] (void *data)
     {
         auto kbd  = static_cast<wlr_keyboard*>(data);
         auto seat = wf::get_core().get_current_seat();
+
+        mwlr_keyboard_modifiers_event event;
+        event.time_msec = wf::get_current_time();
+        emit_device_event_signal(&event, &handle->base);
 
         if (!wf::get_core_impl().im_relay->handle_modifier(kbd))
         {
@@ -93,6 +111,7 @@ void wf::keyboard_t::setup_listeners()
         }
 
         wf::get_core().seat->notify_activity();
+        emit_device_post_event_signal(&event, &handle->base);
     });
 
     on_key.connect(&handle->events.key);

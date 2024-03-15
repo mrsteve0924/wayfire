@@ -132,6 +132,32 @@ struct input_event_signal
      * pointer_button, keyboard_key, touch_down
      */
     input_event_processing_mode_t mode = input_event_processing_mode_t::FULL;
+
+    /**
+     * The wlr device which triggered the event. May be NULL for events which are merged together for ex. via
+     * wlr-cursor.
+     */
+    wlr_input_device *device;
+};
+
+/**
+ * Same as @input_event_signal, but emitted after bindings have been handled and before the event is sent
+ * to the client (if at all).
+ *
+ * Note: currently only keyboard_key events support this signal.
+ * TODO: add the event for the rest of the event types.
+ */
+template<class wlr_event_t>
+struct pre_client_input_event_signal
+{
+    wlr_event_t *event;
+    wlr_input_device *device;
+
+    /** Last opportunity for plugins to influence the processing of this event. */
+    bool carried_out = false;
+
+    /** The node which will receive the event. May be NULL. */
+    wf::scene::node_ptr focus_node;
 };
 
 /**
@@ -141,6 +167,7 @@ template<class wlr_event_t>
 struct post_input_event_signal
 {
     wlr_event_t *event;
+    wlr_input_device *device;
 };
 
 /**
@@ -441,7 +468,9 @@ struct view_set_output_signal
  * when: After the view's parent changes.
  */
 struct view_parent_changed_signal
-{};
+{
+    wayfire_toplevel_view view;
+};
 
 /**
  * on: view, output(view-)
@@ -477,7 +506,9 @@ struct view_minimize_request_signal
  * when: After the view's activated state changes.
  */
 struct view_activated_state_signal
-{};
+{
+    wayfire_toplevel_view view;
+};
 
 /**
  * on: view, output(view-)
