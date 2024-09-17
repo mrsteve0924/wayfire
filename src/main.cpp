@@ -402,13 +402,13 @@ int main(int argc, char *argv[])
     core.egl = wlr_gles2_renderer_get_egl(core.renderer);
     assert(core.egl);
 
-    if (!drop_permissions())
+    /*if (!drop_permissions())
     {
         wl_display_destroy_clients(core.display);
         wl_display_destroy(core.display);
 
         return EXIT_FAILURE;
-    }
+    }*/
 
     auto backend = load_backend(config_backend);
     if (!backend)
