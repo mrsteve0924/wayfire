@@ -98,6 +98,14 @@ Alternatively, you can build from source:
 meson build
 ninja -C build
 sudo ninja -C build install
+
+to build in debug mode:
+meson debugbuild --prefix=/usr --buildtype=debug -Db_sanitize=address,undefined
+ninja -C debugbuild
+sudo ninja -C debugbuild install
+
+When installing wf-config use meson build --prefix=/usr
+
 ```
 
 **Note**: `wf-config` and `wlroots` can be built as submodules, by specifying
