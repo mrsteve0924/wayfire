@@ -95,14 +95,17 @@ The easiest way to install Wayfire, wf-shell and WCM to get a functional desktop
 Alternatively, you can build from source:
 
 ``` sh
-meson build
+meson setup build --prefix=/usr
 ninja -C build
 sudo ninja -C build install
 
 to build in debug mode:
-meson debugbuild --prefix=/usr --buildtype=debug -Db_sanitize=address,undefined
+meson setup debugbuild --prefix=/usr --buildtype=debug -Db_sanitize=address,undefined
 ninja -C debugbuild
 sudo ninja -C debugbuild install
+
+To see if wayfire executable was built with address sanitizer run this in terminal:
+nm -an /usr/bin/wayfire | grep asan
 
 When installing wf-config use meson build --prefix=/usr
 
