@@ -14,6 +14,7 @@
 #include "wayfire/config-backend.hpp"
 #include "core/plugin-loader.hpp"
 #include "core/core-impl.hpp"
+#include <wayfire/nonstd/wlroots.hpp>
 
 static void print_version()
 {
@@ -170,7 +171,7 @@ static wf::config_backend_t *load_backend(const std::string& backend)
             wf::get_plugin_path_for_name(plugin_prefixes, backend).value_or("");
     }
 
-    auto [_, init_ptr] = wf::get_new_instance_handle(config_plugin);
+    auto [_, init_ptr] = wf::get_new_instance_handle(config_plugin, false);
 
     if (!init_ptr)
     {
@@ -234,6 +235,10 @@ void parse_extended_debugging(const std::vector<std::string>& categories)
         {
             LOGD("Enabling extended debugging for render events");
             wf::log::enabled_categories.set((size_t)wf::log::logging_category::RENDER, 1);
+        } else if (cat == "input-devices")
+        {
+            LOGD("Enabling extended debugging for input-devices");
+            wf::log::enabled_categories.set((size_t)wf::log::logging_category::INPUT_DEVICES, 1);
         } else
         {
             LOGE("Unrecognized debugging category \"", cat, "\"");
@@ -274,6 +279,7 @@ int main(int argc, char *argv[])
         {"damage-debug", no_argument, NULL, 'D'},
         {"damage-rerender", no_argument, NULL, 'R'},
         {"legacy-wl-drm", no_argument, NULL, 'l'},
+        {"with-great-power-comes-great-responsibility", no_argument, NULL, 'r'},
         {"help", no_argument, NULL, 'h'},
         {"version", no_argument, NULL, 'v'},
         {0, 0, NULL, 0}
@@ -282,9 +288,10 @@ int main(int argc, char *argv[])
     std::string config_file;
     std::string config_backend = WF_DEFAULT_CONFIG_BACKEND;
     std::vector<std::string> extended_debug_categories;
+    bool allow_root = false;
 
     int c, i;
-    while ((c = getopt_long(argc, argv, "c:B:d::DhRlv", opts, &i)) != -1)
+    while ((c = getopt_long(argc, argv, "c:B:d::DhRlrv", opts, &i)) != -1)
     {
         switch (c)
         {
@@ -306,6 +313,10 @@ int main(int argc, char *argv[])
 
           case 'l':
             runtime_config.legacy_wl_drm = true;
+            break;
+
+          case 'r':
+            allow_root = true;
             break;
 
           case 'h':
@@ -382,33 +393,47 @@ int main(int argc, char *argv[])
     core.ev_loop = wl_display_get_event_loop(core.display);
     core.backend = wlr_backend_autocreate(core.ev_loop, &core.session);
 
-    int drm_fd = wlr_backend_get_drm_fd(core.backend);
+    int drm_fd = -1;
+    char *drm_device = getenv("WLR_RENDER_DRM_DEVICE");
+    if (drm_device)
+    {
+        drm_fd = open(drm_device, O_RDWR | O_CLOEXEC);
+    } else
+    {
+        drm_fd = wlr_backend_get_drm_fd(core.backend);
+    }
+
     if (drm_fd < 0)
     {
-        char *drm_device = getenv("WLR_RENDER_DRM_DEVICE");
-        if (drm_device)
-        {
-            drm_fd = open(drm_device, O_RDWR | O_CLOEXEC);
-        }
-
-        if (drm_fd < 0)
-        {
-            LOGE("Failed to get DRM file descriptor,",
-                " try specifying a valid WLR_RENDER_DRM_DEVICE!");
-            wl_display_destroy_clients(core.display);
-            wl_display_destroy(core.display);
-            return EXIT_FAILURE;
-        }
+#if WLR_HAS_UDMABUF_ALLOCATOR == 1
+        LOGW("Failed to open DRM render device, consider specifying WLR_RENDER_DRM_DEVICE."
+             "Trying SW rendering instead.");
+#else
+        LOGE("Failed to open DRM render device, consider specifying WLR_RENDER_DRM_DEVICE."
+             "If you want to use software rendering, ensure that wlroots has been compiled with udmabuf "
+             "allocator support (available in wlroots >= 0.19.0) and recompile Wayfire.");
+        wl_display_destroy_clients(core.display);
+        wl_display_destroy(core.display);
+        return EXIT_FAILURE;
+#endif
     }
 
     core.renderer = wlr_gles2_renderer_create_with_drm_fd(drm_fd);
-    assert(core.renderer);
+    if (!core.renderer)
+    {
+        LOGE("Failed to create renderer");
+        wl_display_destroy_clients(core.display);
+        wl_display_destroy(core.display);
+        return EXIT_FAILURE;
+    }
+
     core.allocator = wlr_allocator_autocreate(core.backend, core.renderer);
     assert(core.allocator);
     core.egl = wlr_gles2_renderer_get_egl(core.renderer);
     assert(core.egl);
 
-    /*if (!drop_permissions())
+
+    if (!allow_root && !drop_permissions())
     {
         wl_display_destroy_clients(core.display);
         wl_display_destroy(core.display);
@@ -427,7 +452,7 @@ int main(int argc, char *argv[])
 
     LOGD("Using configuration backend: ", config_backend);
     core.config_backend = std::unique_ptr<wf::config_backend_t>(backend);
-    core.config_backend->init(display, core.config, config_file);
+    core.config_backend->init(display, *core.config, config_file);
     core.init();
 
     auto socket = choose_socket(core.display);

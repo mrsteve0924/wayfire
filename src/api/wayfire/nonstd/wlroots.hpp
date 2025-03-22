@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef WLR_USE_UNSTABLE
-    #define WLR_USE_UNSTABLE
+    #define WLR_USE_UNSTABLE 1
 #endif
 
 /**
@@ -62,6 +62,7 @@ extern "C"
 #include <wlr/util/box.h>
 #include <wlr/util/edges.h>
 #include <wayland-server.h>
+#include <wlr/config.h>
 
     static constexpr uint32_t WLR_KEY_PRESSED  = WL_KEYBOARD_KEY_STATE_PRESSED;
     static constexpr uint32_t WLR_KEY_RELEASED = WL_KEYBOARD_KEY_STATE_RELEASED;

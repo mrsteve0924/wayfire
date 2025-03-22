@@ -3,6 +3,7 @@
 #include "wayfire/plugins/common/shared-core-data.hpp"
 #include "wayfire/signal-provider.hpp"
 #include <cstdint>
+#include <list>
 #include <wayfire/config/option-types.hpp>
 #include <wayfire/config/types.hpp>
 #include <wayfire/per-output-plugin.hpp>
@@ -15,6 +16,7 @@
 #include <wayfire/seat.hpp>
 #include <wayfire/util/log.hpp>
 #include <plugins/ipc/ipc-method-repository.hpp>
+#include <list>
 
 /* Initial repeat delay passed */
 static int repeat_delay_timeout_handler(void *callback)
@@ -63,7 +65,7 @@ class wayfire_command : public wf::plugin_interface_t
     }
 
     std::list<ipc_binding_t> ipc_bindings;
-    using command_callback = std::function<void ()>;
+    using command_callback = std::function<bool ()>;
 
     struct
     {
@@ -264,7 +266,7 @@ class wayfire_command : public wf::plugin_interface_t
             for (const auto& [_, _cmd, activator] : list)
             {
                 std::string cmd     = _cmd;
-                command_callback cb = [cmd] () { wf::get_core().run(cmd); };
+                command_callback cb = [cmd] () -> bool { return wf::get_core().run(cmd); };
                 bindings[i] =
                     std::bind(std::mem_fn(&wayfire_command::on_binding), this, cb, mode, always_exec, _1);
                 wf::get_core().bindings->add_activator(wf::create_option(activator), &bindings[i]);
@@ -366,18 +368,19 @@ class wayfire_command : public wf::plugin_interface_t
         {
             act_callback = [=] (const wf::activator_data_t& data)
             {
-                return on_binding([js, this] ()
+                return on_binding([js, this] () -> bool
                 {
                     method_repository->call_method(js["call-method"], js["call-data"]);
+                    return true;
                 }, mode, exec_always, data);
             };
         } else if (js.contains("command"))
         {
             act_callback = [=] (const wf::activator_data_t& data)
             {
-                return on_binding([js] ()
+                return on_binding([js] () -> bool
                 {
-                    wf::get_core().run(js["command"]);
+                    return wf::get_core().run(js["command"]);
                 }, mode, exec_always, data);
             };
         } else
@@ -385,12 +388,12 @@ class wayfire_command : public wf::plugin_interface_t
             temporary_binding = true;
             act_callback = [=] (const wf::activator_data_t& data)
             {
-                return on_binding([client, id] ()
+                return on_binding([client, id] () -> bool
                 {
                     nlohmann::json event;
                     event["event"] = "command-binding";
                     event["binding-id"] = id;
-                    client->send_json(event);
+                    return client->send_json(event);
                 }, mode, exec_always, data);
             };
         }

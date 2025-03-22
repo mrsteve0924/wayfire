@@ -1,4 +1,5 @@
 #include "wayfire/core.hpp"
+#include "wayfire/debug.hpp"
 #include "wayfire/signal-definitions.hpp"
 #include <wayfire/output-layout.hpp>
 #include "wayfire/view.hpp"
@@ -85,10 +86,14 @@ class wayfire_foreign_toplevel
         } else if (app_id_mode == "full")
         {
 #if WF_HAS_XWAYLAND
-            if (wlr_xwayland_surface *xw_surface =
-                    wlr_xwayland_surface_try_from_wlr_surface(view->get_wlr_surface()))
+            auto wlr_surface = view->get_wlr_surface();
+            if (wlr_surface)
             {
-                ev.app_id = nonull(xw_surface->instance);
+                if (wlr_xwayland_surface *xw_surface =
+                        wlr_xwayland_surface_try_from_wlr_surface(wlr_surface))
+                {
+                    ev.app_id = nonull(xw_surface->instance);
+                }
             }
 
 #endif

@@ -1,11 +1,13 @@
 #pragma once
 
+#include <any>
 #include "wayfire/util.hpp"
 #include <wayfire/config/types.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/util/log.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
+#include <any>
 
 namespace  wf
 {

@@ -64,7 +64,8 @@ wayfire_sources = ['geometry.cpp',
 
 wayfire_dependencies = [wayland_server, wlroots, xkbcommon, libinput,
                        pixman, drm, egl, glesv2, glm, wf_protos, libdl,
-                       wfconfig, libinotify, backtrace, wfutils, xcb, wftouch, json]
+                       wfconfig, libinotify, backtrace, wfutils, xcb,
+                       wftouch, json, udev]
 
 if conf_data.get('BUILD_WITH_IMAGEIO')
     wayfire_dependencies += [jpeg, png]
@@ -80,8 +81,7 @@ else
 endif
 
 
-cxx_flags_asan = run_command('/bin/sh', '-c', 'echo $CXXFLAGS $CPPFLAGS | grep fsanitize', check: false)
-if get_option('b_sanitize').contains('address') or cxx_flags_asan.returncode() == 0
+if has_asan
   print_trace = false
   debug_arguments += ['-DHAS_ASAN=1']
   message('Address sanitizer enabled, disabling internal backtrace')

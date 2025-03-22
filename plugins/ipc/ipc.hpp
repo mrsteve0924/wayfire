@@ -1,6 +1,6 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include <nlohmann/json.hpp> // IWYU pragma: keep
 #include <sys/un.h>
 #include <wayfire/object.hpp>
 #include <wayland-server.h>
@@ -20,7 +20,7 @@ class client_t : public client_interface_t
   public:
     client_t(server_t *server, int client_fd);
     ~client_t();
-    void send_json(nlohmann::json json) override;
+    bool send_json(nlohmann::json json) override;
 
   private:
     int fd;

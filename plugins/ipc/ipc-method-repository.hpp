@@ -1,6 +1,6 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
+#include <nlohmann/json.hpp> // IWYU pragma: keep
 #include <functional>
 #include <map>
 #include "wayfire/signal-provider.hpp"
@@ -16,7 +16,7 @@ namespace ipc
 class client_interface_t
 {
   public:
-    virtual void send_json(nlohmann::json json) = 0;
+    virtual bool send_json(nlohmann::json json) = 0; // Returns true upon success.
     virtual ~client_interface_t() = default;
 };
 

@@ -1,5 +1,6 @@
 #include <wayfire/per-output-plugin.hpp>
 #include <memory>
+#include <list>
 #include <wayfire/config/types.hpp>
 #include <wayfire/plugin.hpp>
 #include <wayfire/view.hpp>
@@ -20,6 +21,7 @@
 #include "wayfire/scene-render.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-provider.hpp"
+#include <list>
 
 using blur_algorithm_provider =
     std::function<nonstd::observer_ptr<wf_blur_base>()>;
