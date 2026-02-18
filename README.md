@@ -100,14 +100,14 @@ ninja -C build
 sudo ninja -C build install
 
 to build in debug mode:
-meson setup debugbuild --prefix=/usr --buildtype=debug
-ninja -C debugbuild
-sudo ninja -C debugbuild install
+meson setup build --prefix=/usr --buildtype=debug
+ninja -C build
+sudo ninja -C build install
 
 to build with address sanitizer:
-meson setup debugbuild --prefix=/usr --buildtype=debug -Db_sanitize=address,undefined
-ninja -C debugbuild
-sudo ninja -C debugbuild install
+meson setup build --prefix=/usr -Db_sanitize=address,undefined
+ninja -C build
+sudo ninja -C build install
 
 To see if wayfire executable was built with address sanitizer run this in terminal:
 nm -an /usr/bin/wayfire | grep asan
