@@ -33,24 +33,13 @@ It aims to create a customizable, extendable and lightweight environment without
 
 These are the dependencies needed for building Wayfire.
 
-- [Cairo](https://cairographics.org)
-- [Pango](https://pango.gnome.org/) and PangoCairo
-- [FreeType](https://freetype.org)
-- [GLM](https://glm.g-truc.net)
-- [libdrm](https://dri.freedesktop.org/wiki/DRM/)
-- [libevdev](https://freedesktop.org/wiki/Software/libevdev/)
-- [libGL](https://mesa3d.org)
-- [libinput](https://freedesktop.org/wiki/Software/libinput/)
-- [libjpeg](https://libjpeg-turbo.org)
-- [libpng](http://libpng.org/pub/png/libpng.html)
-- [libxkbcommon](https://xkbcommon.org)
-- [libxml2](http://xmlsoft.org/)
-- [Pixman](https://pixman.org)
-- [pkg-config](https://freedesktop.org/wiki/Software/pkg-config/)
-- [Wayland](https://wayland.freedesktop.org)
-- [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols)
-- [wf-config](https://github.com/WayfireWM/wf-config)
-- [wlroots](https://github.com/swaywm/wlroots)
+- [Cairo](https://cairographics.org) - [Pango](https://pango.gnome.org/) and PangoCairo - [FreeType](https://freetype.org) - [GLM](https://glm.g-truc.net)
+- [libdrm](https://dri.freedesktop.org/wiki/DRM/) - [libevdev](https://freedesktop.org/wiki/Software/libevdev/) - [libGL](https://mesa3d.org)
+- [libinput](https://freedesktop.org/wiki/Software/libinput/) - [libjpeg](https://libjpeg-turbo.org) - [libpng](http://libpng.org/pub/png/libpng.html)
+- [libxkbcommon](https://xkbcommon.org) - [libxml2](http://xmlsoft.org/) - [Pixman](https://pixman.org)
+- [pkg-config](https://freedesktop.org/wiki/Software/pkg-config/) - [Wayland](https://wayland.freedesktop.org) - [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols)
+- [wf-config](https://github.com/WayfireWM/wf-config) - [wlroots](https://github.com/swaywm/wlroots)
+  
 
 ### wlroots Dependencies
 
