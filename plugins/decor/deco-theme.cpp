@@ -79,7 +79,7 @@ cairo_surface_t*decoration_theme_t::render_text(std::string text,
     PangoFontDescription *font_desc;
     PangoLayout *layout;
 
-// render text
+    // render text
     font_desc = pango_font_description_from_string(((std::string)font).c_str());
     pango_font_description_set_absolute_size(font_desc, font_size * PANGO_SCALE);
 
@@ -87,7 +87,7 @@ cairo_surface_t*decoration_theme_t::render_text(std::string text,
     pango_layout_set_font_description(layout, font_desc);
     pango_layout_set_text(layout, text.c_str(), text.size());
 
-/* Horizontal alignment */
+    /* Horizontal alignment */
     std::string halign = title_halign;
 
     if (halign == "center")
@@ -104,7 +104,7 @@ cairo_surface_t*decoration_theme_t::render_text(std::string text,
         pango_layout_set_alignment(layout, PANGO_ALIGN_LEFT);
     }
 
-/* Vertical alignment */
+    /* Vertical alignment */
     int text_width, text_height;
     pango_layout_get_pixel_size(layout, &text_width, &text_height);
 
