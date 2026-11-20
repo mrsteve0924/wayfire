@@ -266,7 +266,8 @@ bool wf::output_impl_t::activate_plugin(wf::plugin_activation_data_t *owner, uin
         LOGD("output ", handle->name, ": activate plugin ", owner->name, " again");
     } else
     {
-        LOGD("output ", handle->name, ": activate plugin ", owner->name);
+        LOGD("output ", handle->name, ": activate plugin ", owner->name,
+            owner->app_id.empty() ? "" : " [app-id: " + owner->app_id + "]");
 
         wf::output_plugin_activated_changed_signal data;
         data.output = this;
@@ -290,7 +291,8 @@ bool wf::output_impl_t::deactivate_plugin(wf::plugin_activation_data_t *owner)
     }
 
     active_plugins.erase(it);
-    LOGD("output ", handle->name, ": deactivate plugin ", owner->name);
+    LOGD("output ", handle->name, ": deactivate plugin ", owner->name,
+        owner->app_id.empty() ? "" : " [app-id: " + owner->app_id + "]");
 
     if (active_plugins.count(owner) == 0)
     {

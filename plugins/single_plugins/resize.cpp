@@ -246,6 +246,7 @@ class wayfire_resize : public wf::per_output_plugin_instance_t, public wf::point
             return false;
         }
 
+        grab_interface.app_id = view->get_app_id();
         if (!output->activate_plugin(&grab_interface))
         {
             return false;

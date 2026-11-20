@@ -46,6 +46,9 @@ struct plugin_activation_data_t
      * plugins.
      */
     std::function<void()> cancel = [] () {};
+
+    // Optional application ID for logging.
+    std::string app_id = "";
 };
 
 class plugin_interface_t

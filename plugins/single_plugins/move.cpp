@@ -301,6 +301,7 @@ class wayfire_move : public wf::per_output_plugin_instance_t,
             return false;
         }
 
+        grab_interface.app_id = view->get_app_id();
         if (!output->activate_plugin(&grab_interface, get_act_flags(view)))
         {
             return false;
